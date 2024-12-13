@@ -51,7 +51,7 @@ def get_metadata(contexts:List[Tuple[Any, List[TrackedRewriteContext]]]) -> List
   for k,ctxs in contexts:
     name = to_function_name(k.name) if isinstance(k, Kernel) else k
     for ctx in ctxs:
-      if ctx.sink.op is Ops.CONST: continue
+      if pickle.loads(ctx.sink).op is Ops.CONST: continue
       upats = [(upat.location, upat.printable(), tm) for _,_,upat,tm in ctx.matches if upat is not None]
       if name not in kernels: kernels[name] = []
       kernels[name].append((k, ctx, GraphRewriteMetadata(ctx.loc, lines(ctx.loc[0])[ctx.loc[1]-1].strip(), name, upats)))
@@ -79,14 +79,13 @@ def _prg(k:Optional[Kernel]) -> Optional[str]:
   try: return k.to_program().src if isinstance(k, Kernel) else None
   except Exception: return None
 def get_details(k:Any, ctx:TrackedRewriteContext, metadata:GraphRewriteMetadata) -> GraphRewriteDetails:
-  g = GraphRewriteDetails(**asdict(metadata), graphs=[ctx.sink], diffs=[], changed_nodes=[], kernel_code=pcall(_prg, k))
+  g = GraphRewriteDetails(**asdict(metadata), graphs=[sink:=pickle.loads(ctx.sink)], diffs=[], changed_nodes=[], kernel_code=pcall(_prg, k))
   replaces: Dict[UOp, UOp] = {}
-  sink = ctx.sink
-  for i,(u0,u1,upat,_) in enumerate(ctx.matches):
+  for i,(u0_bytes,u1_bytes,upat,_) in enumerate(ctx.matches):
     if ctx.bottom_up: replaces = {} # if it's bottom_up it's single pass
-    replaces[u0] = u0 if u1 is None else u1
+    replaces.setdefault(u0:=pickle.loads(u0_bytes), u0 if u1_bytes is None else (u1:=pickle.loads(u1_bytes)))
     # if the match didn't result in a rewrite we move forward
-    if u1 is None: continue
+    if u1_bytes is None: continue
     # first, rewrite this UOp with the current rewrite + all the matches in replaces
     new_sink = _replace_uop(sink, {**replaces})
     # sanity check
