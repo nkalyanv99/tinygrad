@@ -367,7 +367,7 @@ ops_folding = PatternMatcher([
   # op with size 0 is zero
   (UPatScheduled(), lambda b,to_store,base: _as_const(base, 0) if base.size == 0 else None),
   # DETACH is a NOOP here
-  (UPat(Ops.DETACH, name="detach"), lambda detach: detach.src[0]),
+  (UPatScheduled(Ops.DETACH, name="detach"), lambda b,base,detach: detach.src[0]),
   # elementwise const folding
   (UPat(GroupOp.ALU, name="alu"), simplify_alu),
   (UPat({Ops.ADD, Ops.MUL, Ops.IDIV}, name="binop", src=(UPat.var("x"), UPat.var("y"))), simplify_binop),
