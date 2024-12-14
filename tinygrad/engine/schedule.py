@@ -363,9 +363,23 @@ def replace_contiguous(ctx:ScheduleContext, alu:UOp):
     if (replace_src:=ctx.contiguous.get(s, None)) is not None: new_src[i] = replace_src
   if tuple(new_src) != alu.src: return alu.replace(src=tuple(new_src))
 
+def cast_before_view(ctx:ScheduleContext, cast:UOp, b:UOp, x:UOp, view:UOp, base:UOp):
+  if not getenv("CAST_BEFORE_VIEW", 1) or cast.dtype.itemsize > x.dtype.itemsize: return None
+  if x.size == view.size: output_buf = b
+  else:
+    # change output buffer size
+    output_buf = b.replace(arg=b.arg[:2]+(x.size,))
+    ctx.tensor_uops[output_buf] = ctx.tensor_uops[b]
+    del ctx.tensor_uops[b]
+  return UOp(Ops.VIEW, cast.dtype, (output_buf, x.cast(cast.dtype)), ShapeTracker.from_shape(x.shape)).view(unwrap(view.st))
+
 ops_folding = PatternMatcher([
   # op with size 0 is zero
   (UPatScheduled(), lambda b,to_store,base: _as_const(base, 0) if base.size == 0 else None),
+  # CAST_BEFORE_VIEW=1
+  (UPatScheduled(Ops.CAST, name="cast", src=(UPat(Ops.VIEW, name="x", src=(UPat(Ops.BUFFER), UPat())).view(name="view"),)), cast_before_view),
+  # merge views TODO: use the shared one in ops
+  (UPatScheduled().view(name="v1").view(name="v2"), lambda b,base,to_store,v1,v2: base.view(v2.st+v1.st)),
   # DETACH is a NOOP here
   (UPat(Ops.DETACH, name="detach"), lambda detach: detach.src[0]),
   # elementwise const folding
