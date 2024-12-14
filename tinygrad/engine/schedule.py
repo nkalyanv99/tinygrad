@@ -56,12 +56,6 @@ def to_uop(buf:UOp, ctx:ScheduleContext, cache:Dict[UOp, UOp]) -> UOp:
   if buf is not buf.base:
     cache[buf] = ret = to_uop(buf.base, ctx, cache).view(buf.st)
     return ret
-  # make things that can't be images not images
-  dtype = buf.buf_uop.dtype.base if buf.is_realized else buf.dtype
-  if isinstance(dtype, ImageDType) and (prod(buf.shape) != prod(dtype.shape) or not any(buf.shape[x]%4 == 0 for x in buf.st.unit_stride_axes())):
-    assert buf.realized is None, "can't fixup allocated buffer"
-    if DEBUG >= 2: print(f"forcing image {dtype} with shape {buf.shape} to {dtype.base}")
-    dtype = buf.dtype.base
   # base is a VIEW of (BUFFER, (optional) op)
   if buf.is_realized:
     buf_uop = buf.buf_uop
@@ -73,9 +67,9 @@ def to_uop(buf:UOp, ctx:ScheduleContext, cache:Dict[UOp, UOp]) -> UOp:
   # ASSIGN uses the target buffer, otherwise we create a new buffer
   else:
     src = tuple(to_uop(x, ctx, cache) for x in buf.srcs)
-    buf_uop = src[0].base.buf_uop if buf.op is Ops.ASSIGN else UOp.new_buffer(buf.device, buf.size, dtype)
-    op = UOp(buf.op, dtype.base, src, buf.arg)
-  ret = UOp(Ops.VIEW, dtype.base, (buf_uop,) if op is None else (buf_uop, op.alu(Ops.CONTIGUOUS) if buf.forced_realize else op), buf.st)
+    buf_uop = src[0].base.buf_uop if buf.op is Ops.ASSIGN else UOp.new_buffer(buf.device, buf.size, buf.dtype)
+    op = UOp(buf.op, buf.dtype, src, buf.arg)
+  ret = UOp(Ops.VIEW, buf.dtype, (buf_uop,) if op is None else (buf_uop, op.alu(Ops.CONTIGUOUS) if buf.forced_realize else op), buf.st)
   # track the underlying tensor uop for this op
   if op is not None: ctx.tensor_uops[buf_uop] = [buf]
   cache[buf] = ret
@@ -173,6 +167,16 @@ to_si = PatternMatcher([
   (UPat(Ops.ASSIGN, src=(UPat(), UPat.var("x"),)), lambda x: x),
 ])
 
+def fixup_image_buffer(root:UOp, b:UOp, st:UOp):
+  if isinstance(b.dtype, ImageDType) and (prod(st.shape) != prod(b.dtype.shape) or not any(st.shape[x]%4 == 0 for x in st.arg.unit_stride_axes())):
+    if DEBUG >= 2: print(f"forcing image {b.dtype} with shape {st.shape} to {b.dtype.base}")
+    return root.replace(src=(b.replace(dtype=b.dtype.base), st))
+  return None
+no_image = PatternMatcher([
+  (UPat(set(Ops), name="x"), lambda x: None if not isinstance(x.dtype, ImageDType) or x.op is Ops.DEFINE_GLOBAL else x.replace(dtype=x.dtype.base)),
+  (UPat(GroupOp.Buffer, name="root", src=(UPat.var("b"), UPat.var("st"))), fixup_image_buffer),
+])
+
 add_metadata = PatternMatcher([(UPat(tuple(Ops), name="x"), lambda ctx,x: None if (m:=ctx.ops_metadata.get(x)) is None else ctx.metadata.add(m)),])
 add_assign_adjacents = PatternMatcher([(UPat.load(UPat.var("b"), UPat(), name="x"), lambda ctx,b,x: ctx.assign_adj.setdefault(b, []).append(x)
                                if b in ctx.assigns else None)])
@@ -189,6 +193,7 @@ def full_ast_rewrite(pre:UOp, ctx:ScheduleContext) -> Tuple[UOp, ScheduleItemCon
   sink = graph_rewrite(graph_rewrite(sink, view_left), view_right)
   # convert to AST
   sink = graph_rewrite(graph_rewrite(sink, to_si+check_preload if len(si_ctx.assigns) != 0 else to_si, si_ctx), append_bufs, si_ctx)
+  if sink.op is Ops.SINK and any(isinstance(x.dtype, ImageDType) for x in si_ctx.bufs): sink = graph_rewrite(sink, no_image, si_ctx)
   # assert buffer count limit
   if (limit:=BUF_LIMIT.get(device:=si_ctx.bufs[0].device)) is not None and len(si_ctx.bufs) >= limit:
     if DEBUG >= 3: print(sink)
