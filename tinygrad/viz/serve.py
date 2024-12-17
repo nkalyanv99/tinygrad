@@ -2,10 +2,9 @@
 import multiprocessing, pickle, functools, difflib, os, threading, json, time, sys, webbrowser, socket
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
-from dataclasses import asdict, dataclass
-from typing import Any, Callable, Dict, List, Tuple, Optional
-from tinygrad.helpers import colored, getenv, to_function_name, tqdm, unwrap, word_wrap
-from tinygrad.ops import TrackedGraphRewrite, UOp, Ops, lines, GroupOp
+from typing import Any, Callable, Dict, List, Tuple
+from tinygrad.helpers import colored, getenv, to_function_name, unwrap, word_wrap
+from tinygrad.ops import TrackedGraphRewrite, UOp, Ops, GroupOp
 from tinygrad.codegen.kernel import Kernel
 
 uops_colors = {Ops.LOAD: "#ffc0c0", Ops.PRELOAD: "#ffc0c0", Ops.STORE: "#87CEEB", Ops.CONST: "#e0e0e0", Ops.VCONST: "#e0e0e0",
@@ -14,22 +13,21 @@ uops_colors = {Ops.LOAD: "#ffc0c0", Ops.PRELOAD: "#ffc0c0", Ops.STORE: "#87CEEB"
                Ops.INDEX: "#e8ffa0", Ops.WMMA: "#efefc0", Ops.VIEW: "#C8F9D4", **{x:"#ffffc0" for x in GroupOp.ALU},
                Ops.BLOCK: "#C4A484", Ops.BLOCKEND: "#C4A4A4", Ops.BUFFER: "#B0BDFF",}
 
-# ** common helpers
+# **** common helpers
 
 # NOTE: if any extra rendering in VIZ fails, we don't crash
 def pcall(fxn:Callable[..., str], *args, **kwargs) -> str:
   try: return fxn(*args, **kwargs)
   except Exception as e: return f"ERROR: {e}"
 
-# TODO: VIZ doesn't import from realize.py for this
-@functools.lru_cache(None)
-def _to_program(k:Kernel): return k.to_program().src
+# **** JSON convertors
 
-# ** JSON convertors
-
-def tracked_graph_rewrite_to_json(key:Any, rw:TrackedGraphRewrite):
+# ** /kernels list
+def tracked_graph_rewrite_to_json(key:Any, rw:TrackedGraphRewrite) -> Dict:
   kernel_name = pcall(to_function_name, key.name) if isinstance(key, Kernel) else str(key)
-  return {"loc":rw.loc, "kernel_name": kernel_name, "match_cnt": len(rw.matches)}
+  return {"loc":rw.loc, "kernel_name":kernel_name, "match_cnt":len(rw.matches)}
+
+# ** /kernels?id=0 full details (incl. all the rewrites)
 
 def uop_to_json(x:UOp) -> Dict[int, Tuple[str, str, List[int], str, str]]:
   assert isinstance(x, UOp)
@@ -53,12 +51,14 @@ def _replace_uop(base:UOp, replaces:Dict[UOp, UOp]) -> UOp:
 
 @functools.lru_cache(None)
 def _prg(k:Kernel): return k.to_program().src
-def get_details(k:Any, ctx:TrackedGraphRewrite):
-  g = GraphRewriteDetails(**asdict(metadata), graphs=[pickle.loads(ctx.sink)], diffs=[], changed_nodes=[],
-                          kernel_code=pcall(_prg, k) if isinstance(k, Kernel) else None)
+
+def tracked_matches_to_json(key:Any, rw:TrackedGraphRewrite) -> Dict:
+  changed_nodes: List[List[int]] = [[]]
+  diffs: List[List[str]] = []
+  # recreate the SINK in each step of the graph_rewrite
+  sinks = [uop_to_json(sink:=pickle.loads(rw.sink))]
   replaces: Dict[UOp, UOp] = {}
-  sink = g.graphs[0]
-  for i,(u0_b,u1_b,upat,_) in enumerate(ctx.matches):
+  for i,(u0_b,u1_b,upat,_) in enumerate(rw.matches):
     u0 = pickle.loads(u0_b)
     # if the match didn't result in a rewrite we move forward
     if u1_b is None:
@@ -70,10 +70,11 @@ def get_details(k:Any, ctx:TrackedGraphRewrite):
     # sanity check
     if new_sink is sink: raise AssertionError(f"rewritten sink wasn't rewritten! {i} {unwrap(upat).location}")
     # update ret data
-    g.changed_nodes.append([id(x) for x in u1.toposort if x.op is not Ops.CONST])
-    g.diffs.append(list(difflib.unified_diff(pcall(str, u0).splitlines(), pcall(str, u1).splitlines())))
-    g.graphs.append(sink:=new_sink)
-  return g
+    changed_nodes.append([id(x) for x in u1.toposort if x.op is not Ops.CONST])
+    diffs.append(list(difflib.unified_diff(pcall(str, u0).splitlines(), pcall(str, u1).splitlines())))
+    sinks.append(uop_to_json(new_sink))
+    sink = new_sink
+  return {"changed_nodes":changed_nodes, "diffs":diffs, "graphs":sinks, "kernel_code":pcall(_prg, key) if isinstance(key, Kernel) else None}
 
 # ** HTTP server
 
@@ -92,8 +93,9 @@ class Handler(BaseHTTPRequestHandler):
     elif url.path == "/kernels":
       query = parse_qs(url.query)
       if (qkernel:=query.get("kernel")) is not None:
-        #g = get_details(*kernels[int(qkernel[0])][int(query["idx"][0])])
-        jret: Any = {}
+        kernel_idx = int(qkernel[0])
+        rewrite_idx = int(query["idx"][0])
+        jret:Any = tracked_matches_to_json(tracked_keys[kernel_idx], tracked_ctxs[kernel_idx][rewrite_idx])
       else: jret = [[tracked_graph_rewrite_to_json(k, rw) for rw in ctxs] for k,ctxs in zip(tracked_keys, tracked_ctxs)]
       ret, content_type = json.dumps(jret).encode(), "application/json"
     else: status_code = 404
