@@ -27,13 +27,11 @@ class ScheduleItem:
   @property
   def outputs(self) -> Tuple[Buffer, ...]:
     """Read/write or write only buffers in the schedule."""
-    return tuple(b for i,b in enumerate(self.bufs) if i in self.output_idxs)
+    return self.bufs[:len(self.ast.src)] if self.ast.op is Ops.SINK else self.bufs[0:1]
   @property
   def inputs(self) -> Tuple[Buffer, ...]:
     """Read only buffers in the schedule."""
-    return tuple(b for i,b in enumerate(self.bufs) if i not in self.output_idxs)
-  @functools.cached_property
-  def output_idxs(self) -> Tuple[int, ...]: return tuple(x.src[0].arg for x in self.ast.src) if self.ast.op is Ops.SINK else (0,)
+    return self.bufs[len(self.ast.src):] if self.ast.op is Ops.SINK else self.bufs[1:]
 
 # **** Schedule context and big graph
 
