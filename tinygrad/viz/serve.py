@@ -14,15 +14,22 @@ uops_colors = {Ops.LOAD: "#ffc0c0", Ops.PRELOAD: "#ffc0c0", Ops.STORE: "#87CEEB"
                Ops.INDEX: "#e8ffa0", Ops.WMMA: "#efefc0", Ops.VIEW: "#C8F9D4", **{x:"#ffffc0" for x in GroupOp.ALU},
                Ops.BLOCK: "#C4A484", Ops.BLOCKEND: "#C4A4A4", Ops.BUFFER: "#B0BDFF",}
 
-# ** JSON convertors
-
-def tracked_graph_rewrite_to_json(rw:TrackedGraphRewrite):
-  return {"loc":rw.loc, "kernel_name": "test", "match_cnt": len(rw.matches)}
+# ** common helpers
 
 # NOTE: if any extra rendering in VIZ fails, we don't crash
 def pcall(fxn:Callable[..., str], *args, **kwargs) -> str:
   try: return fxn(*args, **kwargs)
   except Exception as e: return f"ERROR: {e}"
+
+# TODO: VIZ doesn't import from realize.py for this
+@functools.lru_cache(None)
+def _to_program(k:Kernel): return k.to_program().src
+
+# ** JSON convertors
+
+def tracked_graph_rewrite_to_json(key:Any, rw:TrackedGraphRewrite):
+  kernel_name = pcall(to_function_name, key.name) if isinstance(key, Kernel) else str(key)
+  return {"loc":rw.loc, "kernel_name": kernel_name, "match_cnt": len(rw.matches)}
 
 def uop_to_json(x:UOp) -> Dict[int, Tuple[str, str, List[int], str, str]]:
   assert isinstance(x, UOp)
@@ -85,9 +92,9 @@ class Handler(BaseHTTPRequestHandler):
     elif url.path == "/kernels":
       query = parse_qs(url.query)
       if (qkernel:=query.get("kernel")) is not None:
-        g = get_details(*kernels[int(qkernel[0])][int(query["idx"][0])])
-        jret: Any = {**asdict(g), "graphs": [uop_to_json(x) for x in g.graphs], "uops": [pcall(str,x) for x in g.graphs]}
-      else: jret = [[tracked_graph_rewrite_to_json(x) for x in k] for k in kernels]
+        #g = get_details(*kernels[int(qkernel[0])][int(query["idx"][0])])
+        jret: Any = {}
+      else: jret = [[tracked_graph_rewrite_to_json(k, rw) for rw in ctxs] for k,ctxs in zip(tracked_keys, tracked_ctxs)]
       ret, content_type = json.dumps(jret).encode(), "application/json"
     else: status_code = 404
 
@@ -118,7 +125,7 @@ if __name__ == "__main__":
   print("*** viz is starting")
   with open(sys.argv[1], "rb") as f: contexts: Tuple[List[Any], List[List[TrackedGraphRewrite]]] = pickle.load(f)
   print("*** unpickled saved rewrites")
-  keys, kernels = contexts
+  tracked_keys, tracked_ctxs = contexts
   print("*** loaded kernels")
   server = HTTPServer(('', PORT), Handler)
   reloader_thread = threading.Thread(target=reloader)
