@@ -53,7 +53,7 @@ def to_uop(buf:UOp, ctx:ScheduleContext, cache:Dict[UOp, UOp]) -> UOp:
   # shapeless op is passthrough
   # realized is passthrough
   # CONST, BIND are passthrough
-  if buf.st is None or buf.base.is_realized or buf.base.is_unrealized_const(): return buf
+  if buf.st is None or buf.base.is_realized or (buf.base.op is Ops.VIEW and buf.base.src[1].op in {Ops.CONST, Ops.BIND}): return buf
   # view is passthrough
   if buf is not buf.base:
     cache[buf] = ret = to_uop(buf.base, ctx, cache).view(buf.st)
@@ -368,7 +368,7 @@ def replace_contiguous(ctx:ScheduleContext, alu:UOp):
 
 ops_folding = PatternMatcher([
   # BUFFERs late folded to CONST are just CONST
-  (UPatScheduled({Ops.CONST, Ops.BIND}, name="const"), lambda b,const,base: base.replace(src=(UOp(Ops.DEVICE, arg=b.device), const))),
+  (UPatScheduled(Ops.CONST, name="const"), lambda b,const,base: base.replace(src=(UOp(Ops.DEVICE, arg=b.device), const))),
   # op with size 0 is zero
   (UPatScheduled(), lambda b,to_store,base: _as_const(base, 0) if base.size == 0 else None),
   # DETACH is a NOOP here

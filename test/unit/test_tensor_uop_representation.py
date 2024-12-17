@@ -45,7 +45,6 @@ class TestTensorUopRepresentation(unittest.TestCase):
   #     UOp(Ops.VIEW, dtypes.float, arg=ShapeTracker(views=(View(shape=(), strides=(), offset=0, mask=None, contiguous=True),)), src=(
   #       UOp(Ops.CONST, dtypes.float, arg=1.0, src=(
   #         UOp(Ops.DEVICE, dtypes.void, arg="METAL", src=()),)),)),))
-  @unittest.expectedFailure
   def test_consts_dont_have_buffers(self):
     a = Tensor.ones(10, 10)
     print(a.lazydata)
