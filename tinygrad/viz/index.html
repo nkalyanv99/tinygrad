@@ -268,11 +268,11 @@
       if (i === currentKernel) {
         requestAnimationFrame(() => kernelUl.scrollIntoView({ behavior: "auto", block: "nearest" }));
       }
-      const p = Object.assign(document.createElement("p"), { id: `kernel-${k[0].kernel_name}`, innerText: k[0].kernel_name ?? "UNPARENTED",
+      const p = Object.assign(document.createElement("p"), { id: `kernel-${k[0].kernel_name}`, innerText: k[0].kernel_name,
         style: "cursor: pointer;"});
       kernelUl.appendChild(p)
       k.forEach((u, j) => {
-        const rwUl = Object.assign(document.createElement("ul"), { innerText: `${toPath(u.loc)} - ${u.upats.length}`, key: `uop-rewrite-${j}`,
+        const rwUl = Object.assign(document.createElement("ul"), { innerText: `${toPath(u.loc)} - ${u.match_cnt}`, key: `uop-rewrite-${j}`,
           className: (j === currentUOp && i == currentKernel) ? "active" : "" })
         if (j === currentUOp) {
           requestAnimationFrame(() => rwUl.scrollIntoView({ behavior: "auto", block: "nearest" }));
