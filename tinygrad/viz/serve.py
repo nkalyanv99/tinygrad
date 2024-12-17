@@ -4,7 +4,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 from typing import Any, Callable, Dict, List, Tuple
 from tinygrad.helpers import colored, getenv, to_function_name, unwrap, word_wrap
-from tinygrad.ops import TrackedGraphRewrite, UOp, Ops, GroupOp
+from tinygrad.ops import TrackedGraphRewrite, UOp, Ops, GroupOp, lines
 from tinygrad.codegen.kernel import Kernel
 
 uops_colors = {Ops.LOAD: "#ffc0c0", Ops.PRELOAD: "#ffc0c0", Ops.STORE: "#87CEEB", Ops.CONST: "#e0e0e0", Ops.VCONST: "#e0e0e0",
@@ -25,7 +25,7 @@ def pcall(fxn:Callable[..., str], *args, **kwargs) -> str:
 # ** /kernels list
 def tracked_graph_rewrite_to_json(key:Any, rw:TrackedGraphRewrite) -> Dict:
   kernel_name = pcall(to_function_name, key.name) if isinstance(key, Kernel) else str(key)
-  return {"loc":rw.loc, "kernel_name":kernel_name, "match_cnt":len(rw.matches)}
+  return {"loc":rw.loc, "kernel_name":kernel_name, "match_cnt":len(rw.matches), "code": lines(rw.loc[0])[rw.loc[1]-1].strip()}
 
 # ** /kernels?id=0 full details (incl. all the rewrites)
 
@@ -56,7 +56,9 @@ def tracked_matches_to_json(key:Any, rw:TrackedGraphRewrite) -> Dict:
   changed_nodes: List[List[int]] = [[]]
   diffs: List[List[str]] = []
   # recreate the SINK in each step of the graph_rewrite
-  sinks = [uop_to_json(sink:=pickle.loads(rw.sink))]
+  uops = [str(sink:=pickle.loads(rw.sink))]
+  sinks = [uop_to_json(sink)]
+  upats:List[Tuple[Tuple[str, int], str]] = []
   replaces: Dict[UOp, UOp] = {}
   for i,(u0_b,u1_b,upat,_) in enumerate(rw.matches):
     u0 = pickle.loads(u0_b)
@@ -73,8 +75,12 @@ def tracked_matches_to_json(key:Any, rw:TrackedGraphRewrite) -> Dict:
     changed_nodes.append([id(x) for x in u1.toposort if x.op is not Ops.CONST])
     diffs.append(list(difflib.unified_diff(pcall(str, u0).splitlines(), pcall(str, u1).splitlines())))
     sinks.append(uop_to_json(new_sink))
+    uops.append(str(new_sink))
+    assert upat is not None, f"upat must be defined when {u0} is rewritten to {u1}"
+    upats.append((upat.location, upat.printable()))
     sink = new_sink
-  return {"changed_nodes":changed_nodes, "diffs":diffs, "graphs":sinks, "kernel_code":pcall(_prg, key) if isinstance(key, Kernel) else None}
+  return {"changed_nodes":changed_nodes, "diffs":diffs, "uops":uops, "graphs":sinks,
+          "kernel_code":pcall(_prg, key) if isinstance(key, Kernel) else None}
 
 # ** HTTP server
 

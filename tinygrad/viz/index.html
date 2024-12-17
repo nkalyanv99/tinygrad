@@ -316,8 +316,9 @@
     // ***** RHS metadata
     const metadata = document.querySelector(".container.metadata");
     metadata.innerHTML = "";
-    metadata.appendChild(vsCodeOpener(ret.loc.join(":").split("/")));
-    const pre = Object.assign(document.createElement("pre"), { innerHTML: `<code>${DOMPurify.sanitize(ret.code_line)}</code>`,
+    const codeDetails = kernels[currentKernel][0];
+    metadata.appendChild(vsCodeOpener(codeDetails.loc.join(":").split("/")));
+    const pre = Object.assign(document.createElement("pre"), { innerHTML: `<code>${DOMPurify.sanitize(codeDetails.code)}</code>`,
       className: "wrap code-block language-python" });
     metadata.appendChild(pre);
     hljs.highlightElement(pre);
@@ -366,7 +367,7 @@
         });
       })
     } else {
-      metadata.appendChild(Object.assign(document.createElement("p"), { textContent: `No rewrites in ${toPath(ret.loc)}.` }));
+      metadata.appendChild(Object.assign(document.createElement("p"), { textContent: `No rewrites in ${toPath(codeDetails.loc)}.` }));
     }
     // ***** collapse/expand
     let isCollapsed = false;
