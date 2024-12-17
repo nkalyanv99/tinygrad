@@ -52,7 +52,8 @@ def to_uop(buf:UOp, ctx:ScheduleContext, cache:Dict[UOp, UOp]) -> UOp:
   if (r:=cache.get(buf)) is not None: return r
   # shapeless op is passthrough
   # realized is passthrough
-  if buf.st is None or buf.base.is_realized: return buf
+  # CONST, BIND are passthrough
+  if buf.st is None or buf.base.is_realized or (buf.op is Ops.VIEW and buf.src[1].op in {Ops.CONST, Ops.BIND}): return buf
   # view is passthrough
   if buf is not buf.base:
     cache[buf] = ret = to_uop(buf.base, ctx, cache).view(buf.st)
@@ -211,7 +212,7 @@ if getenv("RUN_PROCESS_REPLAY"):
 
 # **** Schedule grouping
 
-def is_scheduled(u:UOp) -> bool: return u.op is Ops.VIEW and len(u.src) == 2
+def is_scheduled(u:UOp) -> bool: return u.op is Ops.VIEW and len(u.src) == 2 and u.src[1].op is not Ops.CONST
 def uval(u:UOp) -> UOp:
   assert is_scheduled(u), f"must be a scheduled op {u}"
   return r.src[0] if (r:=u.src[1]).op is Ops.CONTIGUOUS and not (r.src[0].base.op is Ops.VIEW and len(r.src[0].base.src) == 2) else r
@@ -364,6 +365,8 @@ def replace_contiguous(ctx:ScheduleContext, alu:UOp):
   if tuple(new_src) != alu.src: return alu.replace(src=tuple(new_src))
 
 ops_folding = PatternMatcher([
+  # BUFFERs late folded to CONST are just CONST
+  (UPatScheduled({Ops.CONST, Ops.BIND}, name="const"), lambda b,const,base: base.replace(src=(UOp(Ops.DEVICE, arg=b.device), const))),
   # op with size 0 is zero
   (UPatScheduled(), lambda b,to_store,base: _as_const(base, 0) if base.size == 0 else None),
   # DETACH is a NOOP here
@@ -460,9 +463,9 @@ do_realize = PatternMatcher([
 
 # ** this breaks down realized ops into STOREs and rewrites the ops to LOADs
 
-def generate_valid(ctx:ScheduleContext, b:UOp, to_store:UOp, base:UOp) -> UOp:
-  if to_store.op is Ops.BIND: ctx.var_vals.update([to_store.unbind()])
-  return UOp.const_with_shape(base.dtype, to_store if to_store.op is Ops.BIND else to_store.arg, unwrap(base.st).shape)
+def generate_valid(ctx:ScheduleContext, const:UOp, st:UOp) -> UOp:
+  if const.op is Ops.BIND: ctx.var_vals.update([const.unbind()])
+  return UOp.const_with_shape(const.dtype, const if const.op is Ops.BIND else const.arg, unwrap(st.st).shape)
 
 def append_realize(ctx:ScheduleContext, b:UOp, to_store:UOp, base:UOp) -> UOp:
   ctx.realizes[b] = UOp.store(b, ShapeTracker.from_shape(base.shape).to_uop(), append_op(ctx, b, to_store))
@@ -475,7 +478,7 @@ def append_op(ctx:ScheduleContext, b:UOp, to_store:UOp) -> UOp:
 
 break_sched = PatternMatcher([
   # consts are always fused and generated
-  (UPatScheduled({Ops.CONST, Ops.BIND}), generate_valid),
+  (UPat(Ops.VIEW, name="st", src=(UPat(), UPat({Ops.CONST, Ops.BIND}, name="const"))), generate_valid),
   # view of realized buffer just loads
   (UPat(Ops.BUFFER, name="b").view(name="v"), lambda ctx,b,v: UOp(Ops.PRELOAD if b in ctx.assigns else Ops.LOAD, b.dtype.base, (b, v.st.to_uop()))),
   # all other views either fold or realize with a store
@@ -499,7 +502,7 @@ remove_movement_ops = PatternMatcher([(UPat(GroupOp.Movement, name="x"), lambda 
 
 @track_rewrites(named=True)
 def create_schedule_with_vars(outs:List[UOp]) -> Tuple[List[ScheduleItem], Dict[Variable, int]]:
-  if len(outs:=dedup(x.base for x in outs if x.base.realized is None and x.base.op is not Ops.CONST)) == 0: return [], {}
+  if len(outs:=dedup(x.base for x in outs if x.base.realized is None and not (x.base.op is Ops.VIEW and x.base.src[-1].op is Ops.CONST))) == 0: return [], {}
   # create the big graph
   ctx = ScheduleContext()
   cache: Dict[UOp, UOp] = {}
