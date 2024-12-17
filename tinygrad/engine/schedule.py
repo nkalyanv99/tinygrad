@@ -27,11 +27,11 @@ class ScheduleItem:
   @property
   def outputs(self) -> Tuple[Buffer, ...]:
     """Read/write or write only buffers in the schedule."""
-    return tuple(b for i,b in enumerate(self.bufs) if i in self.globals)
+    return self.bufs[:len(self.ast.src) if self.ast.op is Ops.SINK else 1]
   @property
   def inputs(self) -> Tuple[Buffer, ...]:
     """Read only buffers in the schedule."""
-    return tuple(b for i,b in enumerate(self.bufs) if i not in self.globals)
+    return self.bufs[len(self.ast.src):] if self.ast.op is Ops.SINK else self.bufs[1:]
   @functools.cached_property
   def globals(self) -> Tuple[int, ...]: return tuple(x.arg for x in self.ast.toposort if x.op is Ops.DEFINE_GLOBAL)
 
