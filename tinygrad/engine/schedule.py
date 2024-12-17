@@ -465,7 +465,9 @@ do_realize = PatternMatcher([
 
 def generate_valid(ctx:ScheduleContext, const:UOp, st:UOp) -> UOp:
   if const.op is Ops.BIND: ctx.var_vals.update([const.unbind()])
-  return UOp.const_with_shape(const.dtype, const if const.op is Ops.BIND else const.arg, unwrap(st.st).shape)
+  # NOTE: we use base here because CONST can't be image dtype
+  # TODO: move this to a no_image pattern matcher
+  return UOp.const_with_shape(const.dtype.base, const if const.op is Ops.BIND else const.arg, unwrap(st.st).shape)
 
 def append_realize(ctx:ScheduleContext, b:UOp, to_store:UOp, base:UOp) -> UOp:
   ctx.realizes[b] = UOp.store(b, ShapeTracker.from_shape(base.shape).to_uop(), append_op(ctx, b, to_store))
