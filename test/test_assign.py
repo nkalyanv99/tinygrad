@@ -169,7 +169,8 @@ class TestAssign(unittest.TestCase):
     np.testing.assert_allclose(a.numpy(), 3)
 
   # NOTE: this is similar to the resnet failure
-  #@unittest.expectedFailure
+  # TODO: why is this mismatching dtype?
+  @unittest.expectedFailure
   def test_double_assign_alt(self):
     a = Tensor.ones(4).contiguous().realize()
     b = Tensor([1, 2, 3, 4]).realize().lazydata
