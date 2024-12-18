@@ -22,7 +22,7 @@ tensor_uop_spec = PatternMatcher([
   # DEVICE and BUFFER
   (UPat(Ops.DEVICE, dtypes.void, (), name="device"), lambda device: isinstance(device.arg, str)),
   (UPat(Ops.BUFFER, src=(UPat(Ops.DEVICE),), name="buf"), lambda buf:
-   # arg
+   # arg: (number, size)
    isinstance(buf.arg, tuple) and len(buf.arg) == 2 and all(isinstance(x, int) for x in buf.arg) and \
    # dtype
   isinstance(buf.dtype, (DType, ImageDType))),
@@ -30,13 +30,13 @@ tensor_uop_spec = PatternMatcher([
   (UPat(GroupOp.Movement, name="mv", src=(UPat.var("x"),)), lambda mv,x: isinstance(mv.arg, tuple) and mv.dtype == x.dtype),
   # tensor variable
   (UPat(Ops.BIND, dtype=dtypes.int, src=(UPat(Ops.DEFINE_VAR), UPat.cvar(dtype=dtypes.int)), arg=None), lambda: True),
-  # misc ops, I think they're used to flag their source, give them a special behavior
+  # misc ops, I think they're used to flag the source uop, give it a special behavior
   (UPat(Ops.DETACH, name="detach", src=(UPat.var("x"),), arg=None), lambda detach,x: detach.dtype == x.dtype),
   (UPat(Ops.CONTIGUOUS, name="contig", src=(UPat.var("x"),), arg=None), lambda contig,x: contig.dtype == x.dtype),
 
   # COPY
   (UPat(Ops.COPY, name="copy", src=(UPat.var("copyin"),)), lambda copy,copyin:
-   # arg
+   # arg (device, clone?)
    isinstance(copy.arg, tuple) and len(copy.arg) == 2 and isinstance(copy.arg[0], str) and isinstance(copy.arg[1], bool) and \
    # dtype
    copy.dtype == copyin.dtype),
