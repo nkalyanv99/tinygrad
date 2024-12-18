@@ -61,11 +61,11 @@ tensor_uop_spec = PatternMatcher([
    # arg (TODO: replace this shapetracker arg with a swizzle on the target BUFFER)
    assign.arg is None or (isinstance(assign.arg, ShapeTracker) and not assign.arg.contiguous)),
 
-  # TODO: is EMPTY needed?
+  # TODO: is EMPTY required? Can it be represented with an existing spec?
   (UPat(Ops.EMPTY, src=(), arg=None), lambda: True),
 
-  # TODO: what is this?
-  (UPat(Ops.BUFFER_VIEW), lambda: True),
+  # TODO: BUFFER_VIEW is overloaded, can we break it into multiple well-defined UOps?
+  (UPat(Ops.BUFFER_VIEW, src=(UPat(),)), lambda: True),
 ])
 
 # **** ScheduleItem return type
