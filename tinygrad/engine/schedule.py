@@ -2,11 +2,11 @@ import sys, atexit, functools, pickle
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Set, Tuple, List, Dict, Optional, DefaultDict
-from tinygrad.ops import GroupOp, UOp, Ops, PatternMatcher, UPat, Variable, can_pad, graph_rewrite, resolve, track_rewrites, view_left, merge_views
-from tinygrad.ops import identity_element, buffers, exec_alu, spec
+from tinygrad.ops import GroupOp, UOp, Ops, PatternMatcher, UPat, Variable, can_pad, graph_rewrite, resolve, track_rewrites, type_verify, view_left, merge_views
+from tinygrad.ops import identity_element, buffers, exec_alu
 from tinygrad.helpers import Context, Metadata, all_int, all_same, colored, diskcache_put, merge_dicts, prod, dedup, getenv, unwrap
 from tinygrad.helpers import FUSE_CONV_BW, FUSE_ARANGE, DEBUG, ContextVar
-from tinygrad.dtype import ConstType, DType, ImageDType, PtrDType, dtypes
+from tinygrad.dtype import ConstType, DType, ImageDType, dtypes
 from tinygrad.shape.shapetracker import ShapeTracker
 from tinygrad.shape.view import View, strides_for_shape
 from tinygrad.device import Buffer
@@ -16,51 +16,54 @@ sys.setrecursionlimit(10000)
 
 BUF_LIMIT = {"METAL":32}
 
-# **** ops spec
+# **** big graph spec
 
-tensor_uop_spec = spec+PatternMatcher([
+tensor_uop_spec = PatternMatcher([
+  # DEVICE and BUFFER
   (UPat(Ops.DEVICE, dtypes.void, (), name="device"), lambda device: isinstance(device.arg, str)),
   (UPat(Ops.BUFFER, src=(UPat(Ops.DEVICE),), name="buf"), lambda buf:
    # arg
    isinstance(buf.arg, tuple) and len(buf.arg) == 2 and all(isinstance(x, int) for x in buf.arg) and \
    # dtype
   isinstance(buf.dtype, (DType, ImageDType))),
-  (UPat(Ops.VIEW, name="view", src=(UPat(Ops.BUFFER, name="buf"),)), lambda view,buf: view.dtype == buf.dtype and view.size == buf.size),
+  # movement ops
+  (UPat(GroupOp.Movement, name="mv", src=(UPat.var("x"),)), lambda mv,x: isinstance(mv.arg, tuple) and mv.dtype == x.dtype),
+  # tensor variable
+  (UPat(Ops.BIND, dtype=dtypes.int, src=(UPat(Ops.DEFINE_VAR), UPat.cvar(dtype=dtypes.int)), arg=None), lambda: True),
+  # misc ops, I think they're used to flag their source, give them a special behavior
+  (UPat(Ops.DETACH, name="detach", src=(UPat.var("x"),), arg=None), lambda detach,x: detach.dtype == x.dtype),
+  (UPat(Ops.CONTIGUOUS, name="contig", src=(UPat.var("x"),), arg=None), lambda contig,x: contig.dtype == x.dtype),
+
+  # COPY
   (UPat(Ops.COPY, name="copy", src=(UPat.var("copyin"),)), lambda copy,copyin:
    # arg
    isinstance(copy.arg, tuple) and len(copy.arg) == 2 and isinstance(copy.arg[0], str) and isinstance(copy.arg[1], bool) and \
    # dtype
    copy.dtype == copyin.dtype),
+  # BUFFER and VIEW specifying shape and device
+  (UPat(Ops.VIEW, name="view", src=(UPat(Ops.BUFFER, name="buf"),)), lambda view,buf: view.dtype == buf.dtype and view.size == buf.size),
 
-  (UPat(Ops.VIEW, name="view", src=(UPat(Ops.BUFFER, name="buf"), UPat(Ops.EMPTY))),
-   lambda view,buf: view.dtype == buf.dtype and view.size == buf.size and view.st.contiguous),
-  (UPat(Ops.VIEW, name="view", src=(UPat(Ops.BUFFER, name="buf"), UPat({*GroupOp.Meta, *GroupOp.ALU, Ops.CAST, Ops.BITCAST}, name="uop"))),
-   lambda view,buf,uop: view.dtype == buf.dtype == uop.dtype and view.size == buf.size == uop.size),
+  (UPat(Ops.VIEW, name="view", src=(UPat(Ops.BUFFER, name="buf"), UPat(GroupOp.Meta, name="uop"))),
+   lambda view,buf,uop: view.dtype == buf.dtype == uop.dtype and view.size == buf.size),
 
+  # CONST has a fake buffer
   (UPat(Ops.VIEW, name="view", src=(UPat(Ops.BUFFER, name="fake", arg=(-1, 1)), UPat({Ops.CONST, Ops.BIND}, name="const_uop"))),
    lambda view,fake,const_uop: view.dtype == fake.dtype == const_uop.dtype),
 
-  (UPat(GroupOp.Movement, name="mv", src=(UPat.var("x"),)), lambda mv,x: isinstance(mv.arg, tuple) and mv.dtype == x.dtype),
-
-  (UPat(Ops.CONTIGUOUS, name="contig", src=(UPat.var("x"),)), lambda contig,x: contig.dtype == x.dtype),
-  (UPat(Ops.DETACH, name="detach", src=(UPat.var("x"),)), lambda detach,x: detach.dtype == x.dtype),
+  # BUFFER assignment
+  # TODO: target is overloaded, it should just be a BUFFER
   (UPat(Ops.ASSIGN, name="assign", src=(UPat({Ops.VIEW, *GroupOp.Movement}, name="target"), UPat.var("new_val"))), lambda assign,target,new_val:
-   # dtype (TOOD: this is asserting in TestAssign.test_double_assign_alt)
+   # dtype (TODO: this is asserting in TestAssign.test_double_assign_alt)
    assign.dtype == target.dtype == new_val.dtype and \
-   # arg
+   # arg (TODO: replace this shapetracker arg with a swizzle on the target BUFFER)
    assign.arg is None or (isinstance(assign.arg, ShapeTracker) and not assign.arg.contiguous)),
 
+  # TODO: is EMPTY needed?
   (UPat(Ops.EMPTY, src=(), arg=None), lambda: True),
 
-  (UPat(Ops.BIND, dtype=dtypes.int, src=(UPat(Ops.DEFINE_VAR), UPat.cvar(dtype=dtypes.int)), arg=None), lambda:True),
-
-  # what is this?
+  # TODO: what is this?
   (UPat(Ops.BUFFER_VIEW), lambda: True),
 ])
-
-def verify(sink:UOp, spec:PatternMatcher):
-  for u in sink.toposort:
-    if not (ret:=spec.rewrite(u)): raise RuntimeError(f"UOp verification err: {ret} {u}")
 
 # **** ScheduleItem return type
 
@@ -546,7 +549,7 @@ remove_movement_ops = PatternMatcher([(UPat(GroupOp.Movement, name="x"), lambda 
 
 @track_rewrites(named=True)
 def create_schedule_with_vars(outs:List[UOp]) -> Tuple[List[ScheduleItem], Dict[Variable, int]]:
-  verify(UOp.sink(*outs), tensor_uop_spec)
+  type_verify(list(UOp.sink(*outs).toposort), extra_spec=tensor_uop_spec)
   if len(outs:=dedup(x.base for x in outs if x.base.realized is None and x.base.op is not Ops.CONST)) == 0: return [], {}
   # create the big graph
   ctx = ScheduleContext()
