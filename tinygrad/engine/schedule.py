@@ -28,10 +28,11 @@ tensor_uop_spec = PatternMatcher([
   isinstance(buf.dtype, (DType, ImageDType))),
   # movement ops
   (UPat(GroupOp.Movement, name="mv", src=(UPat.var("x"),)), lambda mv,x: isinstance(mv.arg, tuple) and mv.dtype == x.dtype),
-  # tensor variable
+  # tensor variable bindings
   (UPat(Ops.BIND, dtype=dtypes.int, src=(UPat(Ops.DEFINE_VAR), UPat.cvar(dtype=dtypes.int)), arg=None), lambda: True),
-  # misc ops, I think they're used to flag the source uop, give it a special behavior
+  # DETACH and CONTIGUOUS change how we interpret the source UOp
   (UPat(Ops.DETACH, name="detach", src=(UPat.var("x"),), arg=None), lambda detach,x: detach.dtype == x.dtype),
+  # ensures the source UOp is realized to memory
   (UPat(Ops.CONTIGUOUS, name="contig", src=(UPat.var("x"),), arg=None), lambda contig,x: contig.dtype == x.dtype),
 
   # COPY
@@ -40,14 +41,16 @@ tensor_uop_spec = PatternMatcher([
    isinstance(copy.arg, tuple) and len(copy.arg) == 2 and isinstance(copy.arg[0], str) and isinstance(copy.arg[1], bool) and \
    # dtype
    copy.dtype == copyin.dtype),
-  # BUFFER and VIEW specifying shape and device
+  # VIEW(BUFFER) applies a ShapeTracker on top of the underlying device memory
   (UPat(Ops.VIEW, name="view", src=(UPat(Ops.BUFFER, name="buf"),)), lambda view,buf: view.dtype == buf.dtype and view.size == buf.size),
 
+  # BUFFER and VIEW specify shape and device for meta ops
   (UPat(Ops.VIEW, name="view", src=(UPat(Ops.BUFFER, name="buf"), UPat(GroupOp.Meta, name="uop"))),
    lambda view,buf,uop: view.dtype == buf.dtype == uop.dtype and view.size == buf.size),
 
-  # CONST has a fake buffer
-  (UPat(Ops.VIEW, name="view", src=(UPat(Ops.BUFFER, name="fake", arg=(-1, 1)), UPat({Ops.CONST, Ops.BIND}, name="const_uop"))),
+  # Tensor const has a ShapeTracker of shape=() and fake buffer of size 1
+  (UPat(Ops.VIEW, name="view", arg=ShapeTracker.from_shape(()), src=(UPat(Ops.BUFFER, name="fake", arg=(-1, 1)),
+                                                                     UPat({Ops.CONST, Ops.BIND}, name="const_uop"))),
    lambda view,fake,const_uop: view.dtype == fake.dtype == const_uop.dtype),
 
   # BUFFER assignment
