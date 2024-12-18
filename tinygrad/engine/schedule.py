@@ -482,7 +482,7 @@ def append_op(ctx:ScheduleContext, b:UOp, to_store:UOp) -> UOp:
 
 break_sched = PatternMatcher([
   # consts are always fused and generated
-  (UPat(Ops.VIEW, name="st", src=(UPat(), UPat({Ops.CONST, Ops.BIND}, name="const"))), generate_valid),
+  (UPat(Ops.VIEW, name="st", src=(UPat(Ops.DEVICE), UPat({Ops.CONST, Ops.BIND}, name="const"))), generate_valid),
   # view of realized buffer just loads
   (UPat(Ops.BUFFER, name="b").view(name="v"), lambda ctx,b,v: UOp(Ops.PRELOAD if b in ctx.assigns else Ops.LOAD, b.dtype.base, (b, v.st.to_uop()))),
   # all other views either fold or realize with a store
