@@ -119,6 +119,7 @@ class Mul(Function):
     return x * y
 
   def backward(self, grad_output:UOp) -> Tuple[Optional[UOp], Optional[UOp]]:
+    assert self.y.dtype == grad_output.dtype, f"{self.y.dtype} != {grad_output.dtype}"
     return (self.y * grad_output) if self.needs_input_grad[0] else None, \
            (self.x * grad_output) if self.needs_input_grad[1] else None
 
