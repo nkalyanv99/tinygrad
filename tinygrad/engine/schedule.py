@@ -6,7 +6,7 @@ from tinygrad.ops import GroupOp, UOp, Ops, PatternMatcher, UPat, Variable, can_
 from tinygrad.ops import identity_element, buffers, exec_alu, spec
 from tinygrad.helpers import Context, Metadata, all_int, all_same, colored, diskcache_put, merge_dicts, prod, dedup, getenv, unwrap
 from tinygrad.helpers import FUSE_CONV_BW, FUSE_ARANGE, DEBUG, ContextVar
-from tinygrad.dtype import ConstType, ImageDType, PtrDType, dtypes
+from tinygrad.dtype import ConstType, DType, ImageDType, PtrDType, dtypes
 from tinygrad.shape.shapetracker import ShapeTracker
 from tinygrad.shape.view import View, strides_for_shape
 from tinygrad.device import Buffer
@@ -24,7 +24,7 @@ tensor_uop_spec = spec+PatternMatcher([
    # arg
    isinstance(buf.arg, tuple) and len(buf.arg) == 2 and all(isinstance(x, int) for x in buf.arg) and \
    # dtype
-   not isinstance(buf.dtype, PtrDType)),
+  isinstance(buf.dtype, (DType, ImageDType))),
   (UPat(Ops.VIEW, name="view", src=(UPat(Ops.BUFFER, name="buf"),)), lambda view,buf: view.dtype == buf.dtype and view.size == buf.size),
   (UPat(Ops.COPY, name="copy", src=(UPat.var("copyin"),)), lambda copy,copyin:
    # arg
