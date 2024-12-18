@@ -52,6 +52,8 @@ tensor_uop_spec = spec+PatternMatcher([
 
   (UPat(Ops.EMPTY, src=(), arg=None), lambda: True),
 
+  (UPat(Ops.BIND, dtype=dtypes.int, src=(UPat(Ops.DEFINE_VAR), UPat.cvar(dtype=dtypes.int)), arg=None), lambda:True),
+
   # what is this?
   (UPat(Ops.BUFFER_VIEW), lambda: True),
 ])
