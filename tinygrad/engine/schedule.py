@@ -294,7 +294,7 @@ def group_realizes(ctx:ScheduleContext) -> List[List[UOp]]:
       group = {tr: None}
       ctx.realizes[tr] = tr
     reduce_for_op.update((tr, r) for tr in group)
-    if FUSE_ARANGE and r_uop.arg[0] is Ops.ADD and uval(r_uop.src[0].base).op is Ops.CONST: reduce_of_const.append(r)
+    if FUSE_ARANGE and r_uop.arg[0] is Ops.ADD and r_uop.src[0].base.is_unrealized_const(): reduce_of_const.append(r)
   # fuse double reduces with no other child
   for reduceop in double_reduces:
     top_reduce = uval(ctx.allbufs[reduceop]).src[0].base.buf_uop
@@ -365,6 +365,7 @@ def replace_contiguous(ctx:ScheduleContext, alu:UOp):
   if tuple(new_src) != alu.src: return alu.replace(src=tuple(new_src))
 
 ops_folding = PatternMatcher([
+  (UPatScheduled(Ops.CONST), lambda b,to_store,base: base.replace(src=(b.src[0], to_store))),
   # op with size 0 is zero
   (UPatScheduled(), lambda b,to_store,base: _as_const(base, 0) if base.size == 0 else None),
   # DETACH is a NOOP here
