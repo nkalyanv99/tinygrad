@@ -2042,13 +2042,22 @@ class TestConst(unittest.TestCase):
     sched = a.schedule()
     self.assertEqual(len(sched), 1)
 
-  def test_ones_ast(self):
+  def test_const_ast(self):
+    a = Tensor.ones((4,)).pad((1, 1)).contiguous()
+    sched = a.schedule()
+    print(sched[0].ast)
+    const_ast_pattern = UPat(Ops.SINK, src=(UPat.store(UPat(), UPat(), UPat(Ops.WHERE, src=(UPat(Ops.VALID), UPat.cvar("x"), UPat(Ops.CONST, arg=0)))),))
+    self.assertEqual(len(const_ast_pattern.match(sched[0].ast, {})), 1)
+    run_schedule(sched)
+    self.assertListEqual(a.tolist(), [0, 1, 1, 1, 1, 0])
+
+  # TOOD: currently even unmasked constants are VALID until codegen
+  def test_unmasked_const_ast(self):
     a = Tensor.ones((4,)).contiguous()
     sched = a.schedule()
-    # currently, ast consts are represented as VALID. TODO: it doesn't have to be VALID
     print(sched[0].ast)
-    ones_ast_pattern = UPat(Ops.SINK, src=(UPat.store(UPat(), UPat(), UPat(Ops.WHERE, src=(UPat(Ops.VALID), UPat.cvar("x"), UPat(Ops.CONST, arg=0)))),))
-    self.assertEqual(len(ones_ast_pattern.match(sched[0].ast, {})), 1)
+    const_ast_pattern = UPat(Ops.SINK, src=(UPat.store(UPat(), UPat(), UPat(Ops.WHERE, src=(UPat(Ops.VALID), UPat.cvar("x"), UPat(Ops.CONST, arg=0)))),))
+    self.assertEqual(len(const_ast_pattern.match(sched[0].ast, {})), 1)
     run_schedule(sched)
     self.assertListEqual(a.tolist(), [1, 1, 1, 1])
 
