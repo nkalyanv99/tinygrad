@@ -152,7 +152,7 @@ def _append_st_vars(ctx:ScheduleItemContext, x:UOp) -> Optional[UOp]:
 def _append_buf(ctx:ScheduleItemContext, x:UOp) -> UOp:
   assert x.arg[0] != -1, "fake -1 BUFFERS should not make it here"
   ctx.bufs.append(x)
-  return UOp(Ops.DEFINE_GLOBAL, x.dtype.ptr(size=x.arg[1]), (), len(ctx.bufs)-1)
+  return UOp(Ops.DEFINE_GLOBAL, x.dtype.ptr(), (), len(ctx.bufs)-1)
 append_bufs = PatternMatcher([(UPat(Ops.BUFFER, name="x"), _append_buf)])
 
 def _append_preload(ctx:ScheduleItemContext, x:UOp, b:UOp) -> UOp:
@@ -393,16 +393,21 @@ ops_folding = PatternMatcher([
 
 # ** buffer merging
 
-def merge(ctx:ScheduleContext, v1:UOp, b1:UOp, v2:UOp, b2:UOp) -> UOp:
-  assert v1.st is not None and v2.st is not None and v1.st == v2.st, f"implicit movementop {v1.st} {v2.st}"
+# if we merge two buffers, the underlying tensor uops now share a Buffer on device
+def merge_tensor_uops(ctx:ScheduleContext, b1:UOp, b2:UOp):
+  assert b1.size == b2.size and b1.dtype == b2.dtype and b1.device == b2.device, f"can't merge {b1} and {b2} if they aren't strictly identical"
   # if b2 is realized also realize b1
   if b2 in ctx.realizes:
     ctx.realizes[b1] = b1
     del ctx.realizes[b2]
-  # ops referring to b2 now ref to b1
+  # tensor uops referring to b2 now ref to b1
   ctx.tensor_uops[b1] += ctx.tensor_uops[b2]
   del ctx.tensor_uops[b2]
+
+def merge(ctx:ScheduleContext, v1:UOp, b1:UOp, v2:UOp, b2:UOp) -> UOp:
+  assert v1.st is not None and v2.st is not None and v1.st == v2.st, f"implicit movementop {v1.st} {v2.st}"
   # merge
+  merge_tensor_uops(ctx, b1, b2)
   return v1
 
 def merge_realized(ctx:ScheduleContext, v1:UOp, b1:UOp, v2:UOp, b2:UOp):
@@ -410,12 +415,19 @@ def merge_realized(ctx:ScheduleContext, v1:UOp, b1:UOp, v2:UOp, b2:UOp):
   for luop in ctx.tensor_uops.get(b1, [])+ctx.tensor_uops.get(b2, []): luop.become(b1.view(unwrap(luop.st)))
   return v1
 
+# root(src.view()) -> src.view()
+def collapse_src_view(ctx:ScheduleContext, root:UOp, src:UOp, mv:UOp):
+  if root.buf_uop in ctx.realizes:
+    if root.size != src.size: return None
+    merge_tensor_uops(ctx, src.buf_uop, root.buf_uop)
+  return mv
+
 merge_bufs = PatternMatcher([
   # merge base
   (UPat(Ops.VIEW, name="v2", src=(UPat(Ops.BUFFER, name="b2"), UPat(Ops.VIEW, name="v1", src=(UPat(Ops.BUFFER, name="b1"), UPat())))), merge),
   (UPat(Ops.VIEW, name="v2", src=(UPat(Ops.BUFFER, name="b2"), UPat(Ops.VIEW, name="v1", src=(UPat(Ops.BUFFER, name="b1"),)))), merge_realized),
   # collapse view
-  (UPat(Ops.VIEW, src=(UPat(Ops.BUFFER), UPat(Ops.VIEW, src=(UPat(Ops.BUFFER), UPat())).view(name="mv"))), lambda mv:mv),
+  (UPat(Ops.VIEW, name="root", src=(UPat(Ops.BUFFER), UPat(Ops.VIEW, name="src", src=(UPat(Ops.BUFFER), UPat())).view(name="mv"))), collapse_src_view),
   (UPat(Ops.VIEW, src=(UPat(Ops.BUFFER), UPat(Ops.VIEW, src=(UPat(Ops.BUFFER),)).view(name="mv"))), lambda mv:mv),
 ])
 
