@@ -17,6 +17,7 @@ from tinygrad.ops import PatternMatcher, UOp, Ops, UPat, graph_rewrite, track_re
 from tinygrad.helpers import CI, DEBUG, FUSE_ARANGE, GlobalCounters, flatten, getenv, SPLIT_REDUCEOP, unwrap, prod, Context
 from tinygrad.codegen.kernel import Kernel, verify_ast
 from tinygrad.engine.schedule import BUF_LIMIT, ScheduleContext, ScheduleItem, create_schedule, view_right, view_left, do_realize, remove_movement_ops
+from tinygrad.engine.schedule import ops_folding
 from tinygrad.engine.realize import CompiledRunner, get_runner, run_schedule
 from extra.models.llama import precompute_freqs_cis
 
@@ -1146,7 +1147,8 @@ class TestSchedule(unittest.TestCase):
     out = r[:4] * b + d.sum(1)[:4]
     # schedule = check_schedule(out, 2)
     schedule = check_schedule(out, 3)
-    self.assertIs(schedule[0].ast.src[0].src[2].op, Ops.ADD)
+    # NOTE: this is the second schedule become of "COMMUTATIVE flipping"
+    self.assertIs(schedule[1].ast.src[0].src[2].op, Ops.ADD)
     run_schedule(schedule)
     np.testing.assert_allclose(out.numpy(), (a.numpy().sum(1) + c.numpy())[:4] * b.numpy() + d.numpy().sum(1)[:4], atol=1e-4, rtol=1e-4)
 
@@ -1961,9 +1963,8 @@ class TestView(unittest.TestCase):
     a = UOp(Ops.VIEW, dtypes.float, (UOp.new_buffer(Device.DEFAULT, 121, dtypes.float), UOp(Ops.EMPTY, dtypes.float)), st)
     b = a.pad(pad_arg:=((0, 0), (0, 0), (18, 0)))
     self.assertEqual(b.st, st.pad(pad_arg))
-    # TODO: why does this help?
-    b = graph_rewrite(b, remove_movement_ops)
-    self.assertIs(b.base.src[1], UOp.const(dtypes.float, 0))
+    b = graph_rewrite(b, ops_folding+remove_movement_ops)
+    self.assertIs(b.base, graph_rewrite(b.base.const_like(0), remove_movement_ops))
 
   def test_partial_mask(self):
     # partial masked out does not degrade into CONST
@@ -2001,8 +2002,8 @@ class TestBigGraph(unittest.TestCase):
     self.assertEqual(len(ctx.realizes), 1)
 
 tensor_const_pm = PatternMatcher([
-  (UPat(Ops.VIEW, src=(UPat(Ops.DEVICE), UPat(Ops.CONST, src=()))), lambda: True),
-  (UPat(Ops.VIEW, src=(UPat(Ops.DEVICE), UPat(Ops.BIND, src=(UPat(Ops.DEFINE_VAR), UPat(Ops.CONST))))), lambda: True),
+  (UPat(Ops.CONST, src=(UPat(Ops.VIEW, src=(UPat(Ops.DEVICE),)))), lambda: True),
+  (UPat(Ops.BIND, src=(UPat(Ops.VIEW, src=(UPat(Ops.DEVICE),)), UPat(Ops.DEFINE_VAR), UPat(Ops.CONST))), lambda: True),
 ])
 class TestConst(unittest.TestCase):
   # ** part 1: basic functionality of a tensor directly created from CONST

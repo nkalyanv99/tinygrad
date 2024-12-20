@@ -439,7 +439,8 @@ class UOp(MathTrait, metaclass=UOpMetaClass):
     if op is Ops.CONST:
       # NOTE: BIND stays BIND, UOp.const unbinds here
       const_uop = arg if isinstance(arg, UOp) else UOp.const(dtype, unwrap(arg))
-      return UOp(Ops.VIEW, dtype, (UOp(Ops.DEVICE, arg=device), const_uop), ShapeTracker.from_shape(())).reshape((1,)*len(shape)).expand(shape)
+      return const_uop.replace(src=(UOp(Ops.DEVICE, arg=device).view(ShapeTracker.from_shape(())),
+                                    *const_uop.src)).reshape((1,)*len(shape)).expand(shape)
     # otherwise it's a contiguous st
     return UOp(Ops.VIEW, dtype, (UOp.new_buffer(device, (st:=ShapeTracker.from_shape(shape)).size, dtype), UOp(op, dtype, src, arg)), st)
   def copy_to_device(self, device:str, force=False, clone:bool=False) -> UOp:
@@ -453,7 +454,7 @@ class UOp(MathTrait, metaclass=UOpMetaClass):
     if not unwrap((src:=self.base).st).contiguous: raise RuntimeError(f"can only copy contiguous {self}")
     return UOp.metaop(Ops.COPY, src.shape, src.dtype, device, (device, clone), (src,)).view(unwrap(self.st))
   def clone(self) -> UOp: return self.copy_to_device(self.device, clone=True)
-  def is_unrealized_const(self): return (s:=self.base).op is Ops.VIEW and len(s.src) == 2 and s.realized is None and s.src[1].op is Ops.CONST
+  def is_unrealized_const(self): return self.base.op is Ops.CONST
   def is_unrealized_unmasked_const(self): return self.is_unrealized_const() and all(v.mask is None for v in unwrap(self.st).views)
   def can_view(self):
     return (self.st is not None and self._device is not None and self.st.consecutive and not self.is_unrealized_const() and
@@ -551,8 +552,8 @@ class UOp(MathTrait, metaclass=UOpMetaClass):
     assert self.arg[1] <= val and val <= self.arg[2], f"bind {val} not in range [{self.arg[1]}, {self.arg[2]}]"
     return UOp(Ops.BIND, self.dtype, (self, self.const_like(val)))
   def unbind(self) -> tuple[Variable, int]:
-    assert self.op is Ops.BIND and self.src[0].op is Ops.DEFINE_VAR and self.src[1].op is Ops.CONST, f"can't unbind {self}"
-    return self.src[0], self.src[1].arg
+    assert self.op is Ops.BIND and self.src[-2].op is Ops.DEFINE_VAR and self.src[-1].op is Ops.CONST, f"can't unbind {self}"
+    return self.src[-2], self.src[-1].arg
   @property
   def val(self) -> int: return self.unbind()[1]
   def vars(self) -> set[UOp]:
