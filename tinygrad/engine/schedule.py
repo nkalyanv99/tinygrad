@@ -58,14 +58,11 @@ tensor_uop_spec = PatternMatcher([
    lambda view,buf: view.dtype == buf.dtype and view.size == buf.size and view.st.contiguous),
 
   # ASSIGN changes the value of an existing buffer
-  (UPat(Ops.ASSIGN, name="assign", src=(UPat.var("target"), UPat.var("new_val"))), lambda assign,target,new_val:
+  (UPat(Ops.ASSIGN, name="assign", src=(UPat.var("target"), UPat.var("new_val")), arg=None), lambda assign,target,new_val:
    # target must be a realized device buffer
    (target.op is Ops.BUFFER or target.is_realized) and
    # dtype
-   (assign.dtype == target.dtype == new_val.dtype) and
-   # arg (TODO: replace this ShapeTracker arg with a VIEW on the target BUFFER)
-   # NOTE: this ShapeTracker must not change shape, but it's free to swizzle the STORE st
-   (assign.arg is None or (isinstance(assign.arg, ShapeTracker) and not assign.arg.contiguous and assign.arg.shape == assign.shape))),
+   (assign.dtype == target.dtype == new_val.dtype)),
 
   # ** TODO: these UOps need new specs, the current representation relies on hacks
 
@@ -198,11 +195,14 @@ def merge_double_reduce(root:UOp, first_reduce:UOp) -> UOp:
   assert not any(x.op is Ops.REDUCE_AXIS for x in first_reduce.src[0].toposort), "can't merge more than two reduceops at a time"
   return first_reduce.src[0].r(first_reduce.arg[0], root.axis_arg+first_reduce.axis_arg)
 
+def swizzle_assign(root:UOp, target:UOp, x:UOp):
+  if target.op is Ops.BUFFER: return None
+  return root.replace(src=(target.buf_uop, x)).view(target.st_arg)
+
 # push VIEW to stores
 view_right = merge_views+PatternMatcher([
   # ASSIGN with offset swizzles STORE
-  (UPat(Ops.STORE, src=(UPat.var("b"), UPat.var("st"), UPat(Ops.ASSIGN, name="a"))),
-   lambda a,b,st: None if a.arg is None else apply_swizzle(UOp.store(b, st, a.replace(arg=None)).view(a.arg))),
+  (UPat(Ops.ASSIGN, name="root", src=(UPat.var("target"), UPat.var("x"))), swizzle_assign),
   # REDUCE(src.view(contiguous=False)) -> REDUCE(src.view(contiguous=True)).view()
   (UPat(Ops.REDUCE_AXIS, src=(UPat.var("src"),), name="r").view(name="v"), lambda v,r,src: None if v.st.contiguous else swizzle_r(r, src, v.st)),
   # REDUCE(src.view()) -> REDUCE(src).view()
@@ -540,8 +540,6 @@ do_realize = PatternMatcher([
   (UPatScheduled(Ops.CAST, src=(UPat(Ops.VIEW, src=(UPat.var("xb"), UPat()), name="to_cast"),), dtype=dtypes.float).view(name="view"), fold_img_cast),
   # realize before COPY or BUFFER_VIEW
   (UPat((Ops.COPY, Ops.BUFFER_VIEW), src=(UPat.any(UPatScheduled(), UPatScheduled().view()),)), realize),
-  # ASSIGN only needs the buffer
-  (UPat(Ops.ASSIGN, src=(UPat(Ops.VIEW, name="dest"), UPat.var("src")), name="x"), lambda dest,src,x: x.replace(src=(dest.base.buf_uop, src))),
 ])
 
 # ** this breaks down realized ops into STOREs and rewrites the ops to LOADs
