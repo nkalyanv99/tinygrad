@@ -186,8 +186,6 @@ def elementwise_view_right(root:UOp) -> UOp|None:
   output_swizzle = swizzles[0]
   new_input_st = ShapeTracker.from_shape(output_swizzle.base.shape)
   ret = root.replace(src=tuple(x if not x.has_st else x.src[0] if x in swizzles else apply_swizzle(x.view(new_input_st)) for x in root.src))
-  # update the ASSIGN offset to match the new shape
-  if ret.op is Ops.ASSIGN and ret.arg is not None: ret = ret.replace(arg=ret.arg+new_input_st,)
   return ret if ret.op is Ops.STORE else ret.view(ShapeTracker.from_shape(output_swizzle.shape))
 
 def merge_double_reduce(root:UOp, first_reduce:UOp) -> UOp:
@@ -195,14 +193,13 @@ def merge_double_reduce(root:UOp, first_reduce:UOp) -> UOp:
   assert not any(x.op is Ops.REDUCE_AXIS for x in first_reduce.src[0].toposort), "can't merge more than two reduceops at a time"
   return first_reduce.src[0].r(first_reduce.arg[0], root.axis_arg+first_reduce.axis_arg)
 
-def swizzle_assign(root:UOp, target:UOp, x:UOp):
-  if target.op is Ops.BUFFER: return None
-  return root.replace(src=(target.buf_uop, x)).view(target.st_arg)
-
 # push VIEW to stores
 view_right = merge_views+PatternMatcher([
-  # ASSIGN with offset swizzles STORE
-  (UPat(Ops.ASSIGN, name="root", src=(UPat.var("target"), UPat.var("x"))), swizzle_assign),
+  # collapse contiguous
+  (UPat(Ops.CONTIGUOUS, src=(UPat.var("x"),)), lambda x: x),
+  # collapse ASSIGN and apply its ShapeTracker to the STORE
+  (UPat.store(UPat(), UPat.var("st"), UPat.assign(UPat.var("target"), UPat.var("x")), name="root"),
+   lambda root,target,st,x: root.replace(src=(target.buf_uop, (target.st_arg+unwrap(st.st)).to_uop(), x))),
   # REDUCE(src.view(contiguous=False)) -> REDUCE(src.view(contiguous=True)).view()
   (UPat(Ops.REDUCE_AXIS, src=(UPat.var("src"),), name="r").view(name="v"), lambda v,r,src: None if v.st.contiguous else swizzle_r(r, src, v.st)),
   # REDUCE(src.view()) -> REDUCE(src).view()
@@ -248,9 +245,6 @@ check_preload = PatternMatcher([(UPat(Ops.PRELOAD, src=(UPat.var("b"), UPat()), 
 to_si = PatternMatcher([
   (UPat(Ops.VIEW, name="x"), _append_st_vars),
   (UPat(Ops.SINK, src=(UPat.store(UPat.var("b"), UPat(), UPat(GroupOp.Meta, name="x")),)), lambda b,x: x.replace(src=(b, *x.src))),
-  # don't need contiguous or assign anymore
-  (UPat(Ops.CONTIGUOUS, src=(UPat.var("x"),)), lambda x: x),
-  (UPat(Ops.ASSIGN, src=(UPat(), UPat.var("x"),)), lambda x: x),
 ])
 
 add_metadata = PatternMatcher([(UPat(tuple(Ops), name="x"), lambda ctx,x: None if (m:=ctx.ops_metadata.get(x)) is None else ctx.metadata.add(m)),])
@@ -274,19 +268,24 @@ def schedule_uop(pre:UOp, ctx:ScheduleContext) -> ScheduleItem:
     if DEBUG >= 3: print(sink)
     raise RuntimeError(f"Kernel for {si_ctx.metadata} exceeded the {limit} buffer count limit for {device} with {len(si_ctx.bufs)} buffers.")
   # we also allow masked views. if it has a single view and it's equal when you shrink a contig, it's fine
+  """
   for ubuf,ops in si_ctx.assign_adj.items():
     if si_ctx.sinked.get(ubuf) is not None and not all((s:=x.st_arg).contiguous or (len(s.views) == 1 and (m:=s.views[0].mask) is not None \
         and ShapeTracker.from_shape(s.shape).shrink(m) == s.shrink(m)) for x in ops):
       raise RuntimeError("self operand of augmented assign must be contiguous.\nhelp: consider using .contiguous():\n"
                          +colored("   - a += a.T\n", "red")+colored("   + a += a.T.contiguous()", "green"))
+  """
   # can only schedule once
   for buf_uop in si_ctx.sinked:
     for luop in si_ctx.tensor_uops[buf_uop]: luop.become(buf_uop.view(unwrap(luop.st)))
   # capture process replay
   if getenv("RUN_PROCESS_REPLAY"):
     PROCESS_REPLAY_CAPTURE[str(pre.key)] = pickle.dumps((pre, si_ctx.assigns, {k:v.value for k,v in ContextVar._cache.items()}, sink))
-  return ScheduleItem(sink, tuple(u.buffer for u in si_ctx.bufs if u.size != 0), tuple(si_ctx.metadata),
+  si = ScheduleItem(sink, tuple(u.buffer for u in si_ctx.bufs if u.size != 0), tuple(si_ctx.metadata),
                       tuple(ubuf for ubuf,ops in si_ctx.assign_adj.items() if any(x.op is Ops.PRELOAD for x in ops)))
+  assert len(si.outputs) != 0, f"{si.ast}"
+  assert not any(x.op is Ops.ASSIGN for x in si.ast.toposort), f"{[x.op for x in sink.src[0].src[2].src]}"
+  return si
 
 PROCESS_REPLAY_CAPTURE: dict[str, bytes] = {}
 if getenv("RUN_PROCESS_REPLAY"):
