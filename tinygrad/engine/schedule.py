@@ -142,19 +142,14 @@ def to_uop(buf:UOp, ctx:ScheduleContext, cache:dict[UOp, UOp]) -> UOp:
   if buf is not buf.base:
     cache[buf] = ret = to_uop(buf.base, ctx, cache).view(buf.st)
     return ret
-  # make things that can't be images not images
-  dtype = buf.dtype
-  if isinstance(dtype, ImageDType) and (prod(buf.shape) != prod(dtype.shape) or not any(buf.shape[x]%4 == 0 for x in buf.st.unit_stride_axes())):
-    if DEBUG >= 2: print(f"forcing image {dtype} with shape {buf.shape} to {dtype.base}")
-    dtype = buf.dtype.base
   # meta ops and assign already have a target buffer, otherwise we create a new one
-  buf_uop = buf.buf_uop if buf.op in {Ops.ASSIGN, Ops.VIEW} else UOp.new_buffer(buf.device, buf.size, dtype)
+  buf_uop = buf.buf_uop if buf.op in {Ops.ASSIGN, Ops.VIEW} else UOp.new_buffer(buf.device, buf.size, buf.dtype)
   if buf.op is Ops.VIEW: op = buf.src[1].replace(src=tuple(to_uop(x, ctx, cache) for x in buf.src[1].src))
-  else: op = buf.replace(dtype=dtype.base, src=tuple(to_uop(x, ctx, cache) for x in buf.src))
+  else: op = buf.replace(dtype=buf.dtype.base, src=tuple(to_uop(x, ctx, cache) for x in buf.src))
   # track the underlying tensor uop for this op
   ctx.tensor_uops[buf_uop] = [buf]
   # (early) bufferize
-  cache[buf] = ret = UOp(Ops.VIEW, dtype.base, (buf_uop, op.alu(Ops.CONTIGUOUS) if buf.forced_realize else op), buf.st)
+  cache[buf] = ret = UOp(Ops.VIEW, buf.dtype.base, (buf_uop, op.alu(Ops.CONTIGUOUS) if buf.forced_realize else op), buf.st)
   return ret
 
 # **** AST graph rewrite
@@ -477,6 +472,17 @@ ops_folding = PatternMatcher([
   (UPat(GroupOp.ALU, name="alu"), replace_contiguous),
 ])
 
+# ** image dtype handling
+
+# make things that can't be images not images
+# NOTE: this mutates the underlying Buffer's dtype
+def fix_image_buffer(b:UOp, base:UOp, root:UOp):
+  if not isinstance(b.dtype, ImageDType): return None
+  if prod(base.shape) != prod(b.dtype.shape) or not any(base.shape[x]%4 == 0 for x in unwrap(base.st).unit_stride_axes()):
+    if DEBUG >= 2: print(f"forcing image buffer uop {b} with shape {base.shape} to {b.dtype.base}")
+    b.become(b.replace(dtype=b.dtype.base))
+fix_image = PatternMatcher([(UPatScheduled(name="root"), fix_image_buffer),])
+
 # ** buffer merging
 
 def merge(ctx:ScheduleContext, v1:UOp, b1:UOp, v2:UOp, b2:UOp) -> UOp:
@@ -594,7 +600,7 @@ def create_schedule_with_vars(outs:list[UOp], skip_check:bool=not __debug__) -> 
   cache: dict[UOp, UOp] = {}
   # to_uop is removing (many) of the movement ops
   for u in (big_graph:=UOp.sink(*(to_uop(x, ctx, cache) for x in outs))).src: ctx.realizes[u.buf_uop] = u
-  big_graph = graph_rewrite(big_graph, remove_movement_ops+ops_folding+do_realize, ctx)
+  big_graph = graph_rewrite(big_graph, fix_image+remove_movement_ops+ops_folding+do_realize, ctx)
   big_graph = graph_rewrite(big_graph, merge_bufs, ctx)
   # create the scheduler context
   graph_rewrite(big_graph, create_ctx, ctx)
