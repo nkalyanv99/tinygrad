@@ -460,7 +460,7 @@ ops_folding = PatternMatcher([
   # reduce of const is collapsed (TODO: make this a generic rule for stride0)
   (UPat(Ops.REDUCE_AXIS, name="reduce", src=(UPat.var("x"),)), simplify_reduceop),
   # CONST doesn't need COPY
-  (UPat(Ops.COPY, src=(UPat.var("x"),)), lambda x:x if x.is_unrealized_const() else None),
+  (UPat(Ops.COPY, src=(UPat.cvar("x"),)), lambda x:x if x.is_unrealized_const() else None),
   # no double COPY
   (UPat(Ops.COPY, src=(UPat(Ops.VIEW, src=(UPat(), UPat(Ops.COPY, name="base")),))), lambda base: base),
   # no COPY to same device, except clone (arg is True)
@@ -577,7 +577,12 @@ def append_uop(ctx:ScheduleContext, view:UOp, buf_uop:UOp) -> None:
   buf_uop.buffer.ref(1)
 create_ctx = PatternMatcher([(UPat(Ops.VIEW, name="view", src=(UPat(Ops.BUFFER, name="buf_uop"), UPat())), append_uop)])
 
-remove_movement_ops = PatternMatcher([(UPat(GroupOp.Movement, name="x"), lambda x: x.base.view(unwrap(x.st))),])
+remove_movement_ops = PatternMatcher([
+  (UPat(GroupOp.Movement, name="x"), lambda x: x.base.view(unwrap(x.st))),
+  # VIEW(CONST(VIEW)) -> CONST(VIEW)
+  (UPat(Ops.CONST, name="x", src=(UPat(Ops.VIEW, name="vm2"),)).view(name="vm1"),
+   lambda x,vm1,vm2: x.replace(src=(vm2.replace(arg=vm2.st+vm1.st),)) if all(v.mask is None for v in unwrap(vm1.st).views) else None),
+])
 
 @track_rewrites(named=True)
 def create_schedule_with_vars(outs:list[UOp], skip_check:bool=not __debug__) -> tuple[list[ScheduleItem], dict[Variable, int]]:
