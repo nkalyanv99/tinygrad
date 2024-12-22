@@ -223,6 +223,7 @@ class UOpMetaClass(type):
     UOpMetaClass.ucache[key] = weakref.ref(created:=super().__call__(*key))
     # NOTE: this will soon be set by Tensor once we remove function.py
     if (metadata:=_METADATA.get()) is not None: all_metadata[created] = metadata
+    #if op is Ops.MUL and not all_same([x.dtype for x in src]): raise Exception([x.dtype for x in src])
     return created
 
 # some uops map to other stuff

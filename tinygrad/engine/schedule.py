@@ -96,6 +96,21 @@ tensor_uop_spec = PatternMatcher([
    (root.dtype != x.dtype and root.dtype.itemsize != x.dtype.itemsize and x.device.startswith("DISK"))),
 ])
 
+big_graph_spec = tensor_uop_spec+PatternMatcher([
+  # CONST ShapeTracker must be unmasked, masked VIEWs can only stack on top of the constant
+  (UPat(Ops.VIEW, name="st", src=(UPat(), UPat(Ops.CONST))), lambda st: all(v.mask is None for v in st.st.views)),
+  # ASSIGN can have a shrunk ShapeTracker relative to the actual device buffer it's mutating
+  (UPat(Ops.VIEW, name="st", src=(UPat(Ops.BUFFER, name="buf"), UPat(Ops.ASSIGN))), lambda st,buf: st.size <= buf.size),
+  # big graph wraps unrealized UOps around a VIEW(BUFFER, <uop>)
+  # this BUFFER is a key for keeping a reference back to the original tensor_uop
+  # while allowing the scheduler to apply transformations on it
+  # NOTE: the VIEW is the output ShapeTracker of the underlying UOp
+  (UPat(Ops.VIEW, name="st", src=(UPat(Ops.BUFFER, name="buf"), UPat())),
+   lambda st,buf: st.size == buf.size and st.st.contiguous),
+  # movement ops can be applied on top of other uops
+  (UPat(Ops.VIEW, name="view", src=(UPat(Ops.VIEW, src=(UPat(), UPat())))), lambda: True),
+])
+
 # **** ScheduleItem return type
 
 @dataclass(frozen=True)
@@ -601,11 +616,10 @@ def create_schedule_with_vars(outs:list[UOp], skip_check:bool=not __debug__) -> 
   if not skip_check: type_verify(list(UOp.sink(*outs).toposort), extra_spec=tensor_uop_spec)
   # to_uop is removing (many) of the movement ops
   sink = to_uop(UOp.sink(*outs), ctx:=ScheduleContext(), cache={})
+  # const folding and fusion
   sink = graph_rewrite(sink, fix_image+remove_movement_ops+ops_folding+do_realize, ctx)
   sink = graph_rewrite(sink, merge_bufs, ctx)
-  # const folding and fusion
-  sink = graph_rewrite(sink, remove_movement_ops+ops_folding+do_realize, ctx)
-  sink = graph_rewrite(sink, merge_bufs, ctx)
+  if not skip_check: type_verify(list(sink.toposort), extra_spec=big_graph_spec)
   # create the scheduler context
   graph_rewrite(sink, create_ctx, ctx)
   # group realizes into kernels
