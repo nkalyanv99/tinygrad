@@ -995,7 +995,7 @@ def type_verify(uops:list[UOp], extra_spec:Optional[PatternMatcher]=None):
   for i,u in enumerate(uops):
     if not spec_pm.rewrite(u):
       print_uops(uops)
-      raise RuntimeError(f"UOp verification failed at {i} on {u.op} {u.dtype} {len(u.src)} {[x.op for x in u.src]} {u.arg}")
+      raise RuntimeError(f"{u}")
 
 # *** most of symbolic lives here now ***
 

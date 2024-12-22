@@ -98,6 +98,7 @@ tensor_uop_spec = PatternMatcher([
 
 scheduler_uop_spec = PatternMatcher([
   (UPat(Ops.VIEW, src=(UPat(Ops.BUFFER), UPat())), lambda: True),
+  (UPat(Ops.VIEW, src=(UPat(Ops.DEVICE), UPat(Ops.CONST))), lambda: True),
 ])
 
 # **** ScheduleItem return type
@@ -458,7 +459,7 @@ def fix_image_buffer(ctx:ScheduleContext, b:UOp, to_store:UOp, base:UOp):
   if not isinstance(dtype:=base.dtype, ImageDType): return None
   if prod(base.shape) == prod(dtype.shape) and any(base.shape[x]%4 == 0 for x in unwrap(base.st).unit_stride_axes()): return None
   b.become(b.replace(dtype=dtype.base))
-  return base.replace(dtype=dtype.base, src=(b, to_store))
+  return base.replace(dtype=dtype.base, src=(b, to_store)).cast(dtype=dtype)
 
 ops_folding = PatternMatcher([
   # make things that can't be images not images
@@ -553,7 +554,7 @@ do_realize = PatternMatcher([
   # realize before expand or unsafe pad ops
   (UPatScheduled(name="src").view(name="view"), realize_view),
   # don't realize image to image casts
-  (UPatScheduled(Ops.CAST, name="root", src=(UPat(Ops.VIEW, src=(UPat.var("xb"), UPat()), name="to_cast"),)).view(name="view"), fold_img_cast),
+  #(UPatScheduled(Ops.CAST, name="root", src=(UPat(Ops.VIEW, src=(UPat.var("xb"), UPat()), name="to_cast"),)).view(name="view"), fold_img_cast),
   # realize before COPY or BUFFER_VIEW
   (UPat((Ops.COPY, Ops.BUFFER_VIEW), src=(UPat.any(UPatScheduled(), UPatScheduled().view()),)), realize),
   # ASSIGN only needs the buffer
@@ -577,11 +578,11 @@ def append_op(ctx:ScheduleContext, b:UOp, to_store:UOp) -> UOp:
 
 break_sched = PatternMatcher([
   # consts are always fused and generated
-  (UPat(Ops.VIEW, name="root", src=(UPat(), UPat.cvar())), lambda root: UOp.const_with_shape(root.dtype.base, root.const_arg, root.shape)),
+  (UPat(Ops.VIEW, name="root", src=(UPat(), UPat.cvar())), lambda root: UOp.const_with_shape(root.dtype, root.const_arg, root.shape)),
   # values from BIND append to this schedule's var_vals
   (UPat(Ops.VIEW, name="st", src=(UPat(), UPat(Ops.BIND, name="bind"))), unbind_variable),
   # view of realized buffer just loads
-  (UPat(Ops.BUFFER, name="b").view(name="v"), lambda ctx,b,v: UOp(Ops.PRELOAD if b in ctx.assigns else Ops.LOAD, b.dtype.base, (b, v.st.to_uop()))),
+  (UPat(Ops.BUFFER, name="b").view(name="v"), lambda ctx,b,v: UOp(Ops.PRELOAD if b in ctx.assigns else Ops.LOAD, b.dtype, (b, v.st.to_uop()))),
   # all other views either fold or realize with a store
   (UPatScheduled(), lambda ctx,b,to_store,base: append_realize(ctx, b, to_store, base) if b in ctx.realizes else append_op(ctx, b, to_store)),
 ])
@@ -611,6 +612,7 @@ def create_schedule_with_vars(outs:list[UOp], skip_check:bool=not __debug__) -> 
   # const folding and fusion
   sink = graph_rewrite(sink, remove_movement_ops+ops_folding+do_realize, ctx)
   sink = graph_rewrite(sink, merge_bufs, ctx)
+  if not skip_check: type_verify(list(sink.toposort), extra_spec=scheduler_uop_spec+tensor_uop_spec)
   # create the scheduler context
   graph_rewrite(sink, create_ctx, ctx)
   # group realizes into kernels
