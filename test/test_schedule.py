@@ -1927,7 +1927,7 @@ class TestSwizzle(unittest.TestCase):
     base = ShapeTracker.from_shape((32, 16, 1))
     start = UOp(Ops.LOAD, dtypes.char, (UOp.new_buffer(Device.DEFAULT, base.size, dtypes.char), base.to_uop()))
     r = start.expand((32, 16, 16)).r(Ops.ADD, (2,))
-    add = r.reshape((16, 32, 1)) + UOp.const_with_shape(r.dtype, 0, (16, 32, 1))
+    add = r.reshape((16, 32, 1)) + UOp.const(dtypes.int, 0)
     self.assertEqual(add.st, ShapeTracker.from_shape((16, 32, 1)))
     to_store = add.permute((1, 0, 2)).contiguous()
     to_store = graph_rewrite(to_store, remove_movement_ops)
@@ -1937,7 +1937,10 @@ class TestSwizzle(unittest.TestCase):
     ret = graph_rewrite(to_store, view_left)
     self.assertEqual(swizzle_cnt(ret), 1)
 
-def store_val(si:ScheduleItem): return si.ast.src[0].src[2]
+# aka. *(data0+idx) = 0;
+store_const0_ast = PatternMatcher([
+  (UPat(Ops.SINK, src=(UPat.store(UPat(), UPat(), UPat(Ops.WHERE, src=(UPat(), UPat(Ops.CONST, arg=0), UPat()))),)), lambda: True),
+])
 class TestView(unittest.TestCase):
   def test_all_masked_out(self):
     # start with non CONST Ops
@@ -1945,8 +1948,7 @@ class TestView(unittest.TestCase):
     # all masked out, degrades to const 0
     b = a.pad(((0, 10), None))[10:]
     sched = check_schedule(b.contiguous(), 1)
-    # TODO: this VALID can clean up, where do we need st?
-    self.assertIs(store_val(sched[-1]), UOp.const_with_shape(b.dtype, 0, b.lazydata.st.shape))
+    assert store_const0_ast.rewrite(sched[-1].ast), f"{sched[-1]} didn't match"
     run_schedule(sched)
     np.testing.assert_equal(b.numpy(), 0)
 
@@ -1957,7 +1959,7 @@ class TestView(unittest.TestCase):
     assert b.shape == (10, 10)
     sched = check_schedule(b.contiguous(), 1)
     self.assertEqual(sched[-1].ast.full_shape, (10, 10))
-    self.assertIs(store_val(sched[-1]), UOp.const_with_shape(b.dtype, 0, b.lazydata.st.shape))
+    assert store_const0_ast.rewrite(sched[-1].ast), f"{sched[-1]} didn't match"
     run_schedule(sched)
     np.testing.assert_equal(b.numpy(), 0)
 
@@ -1972,8 +1974,7 @@ class TestView(unittest.TestCase):
     b = a.pad(((0, 5), None))[5:]
     assert b.shape == (10, 10)
     sched = check_schedule(b.contiguous(), 1)
-    self.assertEqual(store_val(sched[-1]).op, Ops.LOAD)
-    self.assertEqual(store_val(sched[-1]).st_arg, b.lazydata.st)
+    assert not store_const0_ast.rewrite(sched[-1].ast), f"{sched[-1]} didn't match"
     run_schedule(sched)
     np.testing.assert_allclose(b.numpy(), np.pad(a.numpy(), ((0, 5), (0, 0)))[5:])
 
