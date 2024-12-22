@@ -712,6 +712,14 @@ def _assert_valid_uop(uop:UOp, st:ShapeTracker, sts:dict[UOp, ShapeTracker]) -> 
       st = src_sts[0]
   sts[uop] = st
 
+# TODO: this belongs to ops
+shape_spec = PatternMatcher([
+  # only reduceuop is allowed to change shape, limited to turning n to 1
+  (UPat({Ops.REDUCE_AXIS, Ops.WMMA}, name="reduce", src=(UPat.var("x"))), lambda x,r: r.shape == x.st.reduce(r.axis_arg)),
+  # everything else inherits shape
+  (UPat(tuple(Ops), name="x"), lambda x: all_same([y.st.shape for y in x.src if y.st is not None])),
+])
+
 verify_ast_pm = PatternMatcher([
   (UPat(Ops.SINK, name="sink"), lambda sink: all(x.op is Ops.STORE for x in sink.src) and all_same([x.size for x in sink.src])),
 ])
@@ -721,5 +729,5 @@ def verify_ast(ast:UOp) -> dict[UOp, ShapeTracker]:
   for x in ast.src: _assert_valid_uop(x, x.st_arg, sts)
   shape_dims = [sorted(dedup(dims)) for dims in zip(*[x.shape for x in sts.values()])]
   assert all(len(x) == 1 or (len(x) == 2 and x[0] == 1) for x in shape_dims), f"shapes must have either 1 or n in each dimension, {shape_dims}"
-  type_verify(list(ast.toposort), verify_ast_pm)
+  type_verify(list(ast.toposort), shape_spec+verify_ast_pm)
   return sts
