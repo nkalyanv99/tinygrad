@@ -145,11 +145,11 @@ def to_uop(buf:UOp, ctx:ScheduleContext, cache:dict[UOp, UOp]) -> UOp:
   # meta ops and assign already have a target buffer, otherwise we create a new one
   buf_uop = buf.buf_uop if buf.op in {Ops.ASSIGN, Ops.VIEW} else UOp.new_buffer(buf.device, buf.size, buf.dtype)
   if buf.op is Ops.VIEW: op = buf.src[1].replace(src=tuple(to_uop(x, ctx, cache) for x in buf.src[1].src))
-  else: op = buf.replace(dtype=buf.dtype.base, src=tuple(to_uop(x, ctx, cache) for x in buf.src))
+  else: op = buf.replace(dtype=buf.dtype, src=tuple(to_uop(x, ctx, cache) for x in buf.src))
   # track the underlying tensor uop for this op
   ctx.tensor_uops[buf_uop] = [buf]
   # (early) bufferize
-  cache[buf] = ret = UOp(Ops.VIEW, buf.dtype.base, (buf_uop, op.alu(Ops.CONTIGUOUS) if buf.forced_realize else op), buf.st)
+  cache[buf] = ret = UOp(Ops.VIEW, buf.dtype, (buf_uop, op.alu(Ops.CONTIGUOUS) if buf.forced_realize else op), buf.st)
   return ret
 
 # **** AST graph rewrite
@@ -246,6 +246,9 @@ to_si = PatternMatcher([
   # don't need contiguous or assign anymore
   (UPat(Ops.CONTIGUOUS, src=(UPat.var("x"),)), lambda x: x),
   (UPat(Ops.ASSIGN, src=(UPat(), UPat.var("x"),)), lambda x: x),
+  # UOps on ImageDType buffers become the base float once we load them from memory
+  (UPat(set(Ops), name="root"),
+   lambda root: root.replace(dtype=root.dtype.base) if isinstance(root.dtype, ImageDType) and root.op is not Ops.BUFFER else None),
 ])
 
 add_metadata = PatternMatcher([(UPat(tuple(Ops), name="x"), lambda ctx,x: None if (m:=ctx.ops_metadata.get(x)) is None else ctx.metadata.add(m)),])
