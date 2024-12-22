@@ -155,7 +155,7 @@ def to_uop(buf:UOp, ctx:ScheduleContext, cache:dict[UOp, UOp]) -> UOp:
   # track the underlying tensor uop for this op
   ctx.tensor_uops[buf_uop] = [buf]
   # (early) bufferize
-  cache[buf] = ret = UOp(Ops.VIEW, dtype.base, (buf_uop, op.alu(Ops.CONTIGUOUS) if buf.forced_realize else op), buf.st)
+  cache[buf] = ret = UOp(Ops.VIEW, dtype.base, (buf_uop, op), buf.st)
   return ret
 
 # **** AST graph rewrite
@@ -300,7 +300,7 @@ if getenv("RUN_PROCESS_REPLAY"):
 def is_scheduled(u:UOp) -> bool: return u.op is Ops.VIEW and len(u.src) == 2 and u.src[0].op is Ops.BUFFER
 def uval(u:UOp) -> UOp:
   assert is_scheduled(u), f"must be a scheduled op {u}"
-  return r.src[0] if (r:=u.src[1]).op is Ops.CONTIGUOUS and not (r.src[0].base.op is Ops.VIEW and len(r.src[0].base.src) == 2) else r
+  return u.src[1]
 
 def recursive_group(tr:UOp, st:ShapeTracker, r:UOp, children:defaultdict[UOp, dict[UOp, None]], allbufs:dict[UOp, UOp], realizes:dict[UOp, UOp],
                      reduce_for_op:dict[UOp, UOp], group:dict[UOp, None], cache:dict[tuple[UOp, ShapeTracker], None]) -> None:
@@ -387,7 +387,8 @@ def group_realizes(ctx:ScheduleContext) -> list[list[UOp]]:
   # maybe fuse arange with its children
   for rbuf in reduce_of_const:
     group = {tr:None for tr,rop in reduce_for_op.items() if rop is rbuf}
-    if any(luop.forced_realize for tr in group for luop in ctx.tensor_uops[tr]): continue
+    print([luop for tr in group for luop in ctx.tensor_uops[tr]])
+    if any(luop.op is Ops.CONTIGUOUS for tr in group for luop in ctx.tensor_uops[tr]): continue
     kernel_children = {c for tr in group for c in ctx.children[tr] if uval(ctx.allbufs[c]).op not in {Ops.COPY, Ops.BUFFER_VIEW}}
     if len(kernel_children) == 0: continue
     for tr in group: del ctx.realizes[tr]
@@ -439,10 +440,14 @@ def simplify_binop(binop:UOp, x:UOp, y:UOp):
   if binop.op is Ops.MUL and const.const_arg == 1: return other
   if binop.op is Ops.MUL and const.const_arg == 0: return UOp.const(binop.dtype, 0)
 
-def found_contiguous(ctx:ScheduleContext, contig:UOp, base:UOp, b:UOp):
-  if contig.src[0].op is Ops.VIEW and len(contig.src[0].src):
-    old_base = contig.src[0].src[0]
-    if old_base.op is Ops.VIEW and (sti:=unwrap(contig.src[0].st).invert(old_base.shape)) is not None: ctx.contiguous[old_base] = base.view(sti)
+def found_contiguous(ctx:ScheduleContext, contig:UOp, base:UOp, b:UOp, src:UOp):
+  # contiguous on contiguous src collapses
+  if unwrap(src.st).contiguous and src.size == src.base.size and not src.is_unrealized_const():
+    realize(ctx, src.buf_uop, src)
+    return base.replace(src=(b, src))
+  # otherwise we keep the BUFFER
+  old_base = src.base
+  if old_base.op is Ops.VIEW and (sti:=unwrap(src.st).invert(old_base.shape)) is not None: ctx.contiguous[old_base] = base.view(sti)
 def replace_contiguous(ctx:ScheduleContext, alu:UOp):
   new_src = list(alu.src)
   for i,s in enumerate(alu.src):
@@ -474,7 +479,7 @@ ops_folding = PatternMatcher([
   (UPatScheduled(Ops.COPY, src=UPat(Ops.VIEW, name="copyin"), name="copy"),
    lambda base,b,copyin,copy: copyin if base.device == copy.device and copy.arg[1] is not True else None),
   # support for using a contiguous permuted view instead of the parent view if one exists
-  (UPatScheduled(Ops.CONTIGUOUS, name="contig"), found_contiguous),
+  (UPatScheduled(Ops.CONTIGUOUS, name="contig", src=(UPat(Ops.VIEW, name="src"),)), found_contiguous),
   (UPat(GroupOp.ALU, name="alu"), replace_contiguous),
 ])
 
