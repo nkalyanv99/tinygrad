@@ -599,6 +599,9 @@ remove_movement_ops = PatternMatcher([
   # merge unmasked const views
   (UPat(Ops.VIEW, src=(UPat(Ops.VIEW, src=(UPat(), UPat(Ops.CONST)), name="v1")), name="v2"),
    lambda v1,v2: v1.replace(arg=v1.arg+v2.arg) if all(v.mask is None for v in v2.st.views) else None),
+  (UPat(Ops.VIEW, name="v", src=(UPat.var("x"),)),
+   lambda v,x: v.const_like(0) if x.st is not None and (x.st.size == 0 or v.st.views[-1].mask is not None and any((x[1]-x[0]) == 0 for x in v.st.views[-1].mask)) else None),
+  (UPat(Ops.VIEW, name="v", src=(UPat.var("x"),)), lambda v,x: x if v.st.contiguous and x.st is not None and x.shape == v.shape else None),
 ])
 
 @track_rewrites(named=True)
