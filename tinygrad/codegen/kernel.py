@@ -5,7 +5,7 @@ from collections import defaultdict
 from typing import Optional, cast, Final, Callable, Sequence
 from enum import Enum, auto
 
-from tinygrad.ops import GroupOp, KernelInfo, UOp, Ops, can_pad, print_uops, type_verify, resolve, Variable, sint, \
+from tinygrad.ops import GroupOp, KernelInfo, PatternMatcher, UOp, Ops, UPat, can_pad, print_uops, type_verify, resolve, Variable, sint, \
   graph_rewrite, track_rewrites, view_left
 from tinygrad.device import Device
 from tinygrad.renderer import Renderer, TensorCore, ProgramSpec
@@ -701,27 +701,25 @@ def _assert_valid_uop(uop:UOp, st:ShapeTracker, sts:dict[UOp, ShapeTracker]) -> 
     sts[uop] = sts[local_reduce]
     return
   for x in uop.src: _assert_valid_uop(x, st, sts)
-  # only reduceuop is allowed to change shape, limited to turning n to 1
-  if uop.op in {Ops.REDUCE_AXIS, Ops.WMMA}: st = ShapeTracker.from_shape(sts[uop.src[0]].reduce(uop.axis_arg))
-  # movementops are pushed to VIEW
-  elif uop.op is Ops.VIEW:
-    assert len(uop.src) == 0, f"can't swizzle in kernel yet {uop}"
-    st = uop.arg
-  # everything else inherits shape
-  else:
-    if len(src_sts:=[sts[x] for x in uop.src if x in sts]) == 0: return None
-    st = src_sts[0]
-    if not all_same(shapes:=[x.shape for x in src_sts]):
-      if all_same(sizes:=[prod(x) for x in shapes]): raise AssertionError(f"found implicit reshape {shapes}")
-      raise AssertionError(f"found implicit expand {sizes} {shapes}")
+  match uop.op:
+    # only reduceuop is allowed to change shape, limited to turning n to 1
+    case Ops.REDUCE_AXIS | Ops.WMMA: st = ShapeTracker.from_shape(sts[uop.src[0]].reduce(uop.axis_arg))
+    # movementops are pushed to VIEW
+    case Ops.VIEW: st = uop.arg
+    # everything else inherits shape
+    case _:
+      if len(src_sts:=[sts[x] for x in uop.src if x in sts]) == 0: return None
+      st = src_sts[0]
   sts[uop] = st
 
+verify_ast_pm = PatternMatcher([
+  (UPat(Ops.SINK, name="sink"), lambda sink: all(x.op is Ops.STORE for x in sink.src) and all_same([x.size for x in sink.src])),
+])
+
 def verify_ast(ast:UOp) -> dict[UOp, ShapeTracker]:
-  assert ast.op is Ops.SINK and all(x.op is Ops.STORE for x in ast.src), "must be SINK"
-  assert all_same([x.st_arg.size for x in ast.src]), "outputs must be exactly the same size"
   sts: dict[UOp, ShapeTracker] = {}
-  for out in ast.src: _assert_valid_uop(out, out.st_arg, sts)
+  for x in ast.src: _assert_valid_uop(x, x.st_arg, sts)
   shape_dims = [sorted(dedup(dims)) for dims in zip(*[x.shape for x in sts.values()])]
   assert all(len(x) == 1 or (len(x) == 2 and x[0] == 1) for x in shape_dims), f"shapes must have either 1 or n in each dimension, {shape_dims}"
-  type_verify(list(sts))
+  type_verify(list(ast.toposort), verify_ast_pm)
   return sts
