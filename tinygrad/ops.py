@@ -1303,12 +1303,13 @@ ConstLike = Union[ConstType, Variable, tuple[ConstType, ...]]
 # *** uop swizzling ***
 
 def collapse_view(x:UOp, v:UOp):
+  if x.st is None: return None
   if x.size == 0 or ((mask:=unwrap(v.st).views[-1].mask) is not None and any((x[1]-x[0]) == 0 for x in mask)): return v.const_like(0)
   if unwrap(v.st).contiguous and x.shape == v.shape: return x
 
 merge_views = PatternMatcher([
   # VIEW(VIEW) merges
-  (UPat(Ops.VIEW, name="s0").view(name="s1"), lambda s0,s1: s0.replace(arg=s0.st+s1.st)),
+  (UPat(Ops.VIEW, name="s0", src=(UPat(),)).view(name="s1"), lambda s0,s1: s0.replace(arg=s0.st+s1.st)),
   # can collapse VIEW in some cases
   (UPat.var("x").view(name="v"), collapse_view),
 ])
