@@ -223,7 +223,6 @@ class UOpMetaClass(type):
     UOpMetaClass.ucache[key] = weakref.ref(created:=super().__call__(*key))
     # NOTE: this will soon be set by Tensor once we remove function.py
     if (metadata:=_METADATA.get()) is not None: all_metadata[created] = metadata
-    #if op is Ops.MUL and not all_same([x.dtype for x in src]): raise Exception([x.dtype for x in src])
     return created
 
 # some uops map to other stuff
@@ -809,7 +808,9 @@ class PatternMatcher:
     for p,fxn,early_reject,has_ctx in self.pdict.get(uop.op, []):
       if not early_reject.issubset(ler): continue
       for match in p.match(uop, {}):
-        if (ret:=(fxn(ctx=ctx, **match) if has_ctx else fxn(**match))) is not None: return ret
+        if (ret:=(fxn(ctx=ctx, **match) if has_ctx else fxn(**match))) is not None:
+          #print(p.printable(), ret)
+          return ret
     return None
 
 # *** tracking pattern matcher ***
@@ -849,6 +850,7 @@ class TrackedPatternMatcher(PatternMatcher):
       for match in p.match(uop, {}):
         if (ret:=(fxn(ctx=ctx, **match) if has_ctx else fxn(**match))) is not None:
           match_stats[p][0] += 1
+          #print(p.printable())
           match_stats[p][3] += (et:=time.perf_counter()-st)
           if TRACK_MATCH_STATS >= 3: print(f"{et*1e6:7.2f} us -- ", p.printable())
           if TRACK_MATCH_STATS >= 2 and isinstance(ret, UOp) and len(tracked_ctxs) != 0:

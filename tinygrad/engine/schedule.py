@@ -547,6 +547,7 @@ def realize_view(ctx:ScheduleContext, view:UOp, src:UOp, b:UOp, **kwargs) -> Non
 
 def fold_img_cast(ctx:ScheduleContext, xb:UOp, view:UOp, b:UOp, to_cast:UOp, **kwargs) -> UOp|None:
   if not isinstance(xb.dtype, ImageDType) or b not in ctx.realizes or xb not in ctx.realizes or uval(to_cast).op in GroupOp.Meta: return None
+  if xb.dtype != b.dtype: return None
   del ctx.realizes[b]
   return to_cast.view(unwrap(view.st))
 
