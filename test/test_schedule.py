@@ -1910,11 +1910,12 @@ class TestSwizzle(unittest.TestCase):
     ret = swizzle_rewrite(a.view(st))
     self.assertEqual(ret.st_arg, st+st)
 
-  @unittest.skip("no instant rules on view")
   def test_contiguous_view_simplify(self):
     base = ShapeTracker.from_shape((32, 32))
-    a = Tensor.empty(32, 32)
+    a = UOp(Ops.LOAD, dtypes.char, (UOp.new_buffer(Device.DEFAULT, base.size, dtypes.char), base.to_uop()))
     swizzle = a.reshape((64, 16))
+    swizzle = graph_rewrite(swizzle, remove_movement_ops)
+    self.assertEqual(swizzle_cnt(swizzle), 1)
     ret = swizzle_rewrite(swizzle)
     self.assertEqual(ret.st_arg, base.reshape((64, 16))) # late rewrite
     reswizzle = a.reshape((64, 16)).reshape((32, 32))

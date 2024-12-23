@@ -544,6 +544,8 @@ do_realize = PatternMatcher([
 # **** rewrite VIEW into LOAD/STORE/VALID or fuse the underlying UOp
 
 def generate_const(x:UOp, st:UOp):
+  # NOTE: masked VIEW stacks on top of the CONST, this is required for const folding correctness
+  assert all(v.mask is None for v in unwrap(st.st).views), f"ShapeTracker of CONST must be unmasked, got {st}"
   return UOp(Ops.VALID, dtypes.bool, (unwrap(st.st).to_uop(),)).where(x.replace(dtype=x.dtype.base), 0)
 
 def unbind_variable(ctx:ScheduleContext, bind:UOp, st:UOp):
@@ -551,13 +553,14 @@ def unbind_variable(ctx:ScheduleContext, bind:UOp, st:UOp):
   return generate_const(UOp.const(bind.dtype, bind), st)
 
 def load_realized(ctx:ScheduleContext, b:UOp, st:UOp):
+  assert st.size == b.size and unwrap(st.st).contiguous, f"ShapeTracker of realized {b} BUFFER must match the BUFFER size {st}"
   # NOTE: if we're assigning to the BUFFER too, PRELOAD tells toposort to place this load before the ASSIGN
   return UOp(Ops.PRELOAD if b in ctx.assigns else Ops.LOAD, b.dtype.base, (b, unwrap(st.st).to_uop()))
 
 def store_or_fuse(ctx:ScheduleContext, b:UOp, x:UOp, st:UOp):
   if (m:=ctx.tensor_uops[b][0].metadata) is not None: ctx.ops_metadata[x] = m
-  if b not in ctx.realizes: return x.view(unwrap(st.st)) # collapse BUFFER
-  ctx.realizes[b] = UOp.store(b, ShapeTracker.from_shape(st.shape if x.st is None else x.shape).to_uop(), x)
+  if b not in ctx.realizes: return x # collapse BUFFER
+  ctx.realizes[b] = UOp.store(b, ShapeTracker.from_shape(st.shape).to_uop(), x)
   return UOp(Ops.LOAD, x.dtype, (b, unwrap(st.st).to_uop()))
 
 break_sched = PatternMatcher([
@@ -582,23 +585,7 @@ def append_uop(ctx:ScheduleContext, view:UOp, buf_uop:UOp) -> None:
   buf_uop.buffer.ref(1)
 create_ctx = PatternMatcher([(UPat(Ops.VIEW, name="view", src=(UPat(Ops.BUFFER, name="buf_uop"), UPat())), append_uop)])
 
-def view_const(st:UOp, const:UOp, view:UOp):
-  new_st = unwrap(st.st)+unwrap(view.st)
-  if all(v.mask is None for v in unwrap(view.st).views): return st.replace(arg=new_st)
-  return UOp(Ops.VALID, dtypes.bool, (new_st.to_uop(),)).where(const, 0)
-
-# NOTE: masked CONST rules must come BEFORE normal merge_views so that we can instantly create VALID
-remove_movement_ops = PatternMatcher([
-  # stacking movement ops on top of VIEW is fine, careful
-  (UPat(GroupOp.Movement, name="mv", src=(UPat(Ops.VIEW, src=(UPat.var("x"),)),)), lambda x,mv: x.view(unwrap(mv.st))),
-  # stacking movement ops on top of VALID is fine too
-  (UPat(GroupOp.Movement, name="mv", src=(UPat(Ops.WHERE, name="x", src=(UPat(Ops.VALID), UPat(), UPat())),)), lambda x,mv: x.view(unwrap(mv.st))),
-  (UPat(GroupOp.Movement, name="mv", src=(UPat(Ops.VIEW, name="x", src=(UPat(), UPat.cvar(),)),)), lambda x,mv: x.view(unwrap(mv.st))),
-  # const folding
-  # VIEW(VIEW(CONST)) -> VIEW(CONST) or VALID
-  (UPat(Ops.VIEW, name="view", src=(UPat(Ops.VIEW, name="st", src=(UPat(), UPat.cvar("const"))),)), view_const),
-  # VALID folds and stuff?
-])+merge_views
+remove_movement_ops = PatternMatcher([(UPat(GroupOp.Movement, name="x"), lambda x: x.base.view(unwrap(x.st))),])
 
 @track_rewrites(named=True)
 def create_schedule_with_vars(outs:list[UOp], skip_check:bool=not __debug__) -> tuple[list[ScheduleItem], dict[Variable, int]]:
@@ -607,8 +594,6 @@ def create_schedule_with_vars(outs:list[UOp], skip_check:bool=not __debug__) -> 
   sink = to_uop(UOp.sink(*outs), ctx:=ScheduleContext(), cache={})
   # const folding and fusion
   sink = graph_rewrite(sink, remove_movement_ops+ops_folding+do_realize, ctx)
-  unmerged_views = [x for x in sink.toposort if x.op in GroupOp.Movement or (x.op is Ops.VIEW and len(x.src) != 0 and x.src[0].op is Ops.VIEW)]
-  assert len(unmerged_views) == 0, f"found {len(unmerged_views)} unmerged views! {unmerged_views[0]}"
   sink = graph_rewrite(sink, merge_bufs, ctx)
   # create the scheduler context
   graph_rewrite(sink, create_ctx, ctx)
