@@ -544,8 +544,6 @@ do_realize = PatternMatcher([
 # **** rewrite VIEW into LOAD/STORE/VALID or fuse the underlying UOp
 
 def generate_const(x:UOp, st:UOp):
-  # NOTE: masked VIEW stacks on top of the CONST, this is required for const folding correctness
-  assert all(v.mask is None for v in unwrap(st.st).views), f"ShapeTracker of CONST must be unmasked, got {st}"
   return UOp(Ops.VALID, dtypes.bool, (unwrap(st.st).to_uop(),)).where(x.replace(dtype=x.dtype.base), 0)
 
 def unbind_variable(ctx:ScheduleContext, bind:UOp, st:UOp):
@@ -553,7 +551,6 @@ def unbind_variable(ctx:ScheduleContext, bind:UOp, st:UOp):
   return generate_const(UOp.const(bind.dtype, bind), st)
 
 def load_realized(ctx:ScheduleContext, b:UOp, st:UOp):
-  #assert st.size == b.size and unwrap(st.st).contiguous, f"ShapeTracker of realized {b} BUFFER must match the BUFFER size {st}"
   # NOTE: if we're assigning to the BUFFER too, PRELOAD tells toposort to place this load before the ASSIGN
   return UOp(Ops.PRELOAD if b in ctx.assigns else Ops.LOAD, b.dtype.base, (b, unwrap(st.st).to_uop()))
 
@@ -585,9 +582,13 @@ def append_uop(ctx:ScheduleContext, view:UOp, buf_uop:UOp) -> None:
   buf_uop.buffer.ref(1)
 create_ctx = PatternMatcher([(UPat(Ops.VIEW, name="view", src=(UPat(Ops.BUFFER, name="buf_uop"), UPat())), append_uop)])
 
+def mv2(x:UOp, mv:UOp):
+  raise Exception(x)
+
 remove_movement_ops = PatternMatcher([
   (UPat(GroupOp.Movement, name="mv", src=(UPat(Ops.VIEW, src=(UPat.var("x"),)),)), lambda x,mv: x.view(unwrap(mv.st))),
-  (UPat(GroupOp.Movement, name="mv", src=(UPat.var("x"),)), lambda x,mv: x.base.view(unwrap(mv.st))),
+  (UPat(GroupOp.Movement, name="mv", src=(UPat(Ops.VIEW, name="x", src=(UPat(), UPat.cvar(),)),)), lambda x,mv: x.view(unwrap(mv.st))),
+  (UPat(GroupOp.Movement, name="mv", src=(UPat.var("x"),)), mv2),
   (UPat(Ops.VIEW, name="v2", src=(UPat(Ops.VIEW, name="v1", src=(UPat(),)),)), lambda v1,v2: v1.replace(arg=v1.st+v2.st)),
 ])
 
