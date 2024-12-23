@@ -582,13 +582,9 @@ def append_uop(ctx:ScheduleContext, view:UOp, buf_uop:UOp) -> None:
   buf_uop.buffer.ref(1)
 create_ctx = PatternMatcher([(UPat(Ops.VIEW, name="view", src=(UPat(Ops.BUFFER, name="buf_uop"), UPat())), append_uop)])
 
-def mv2(x:UOp, mv:UOp):
-  raise Exception(x)
-
 remove_movement_ops = PatternMatcher([
   (UPat(GroupOp.Movement, name="mv", src=(UPat(Ops.VIEW, src=(UPat.var("x"),)),)), lambda x,mv: x.view(unwrap(mv.st))),
   (UPat(GroupOp.Movement, name="mv", src=(UPat(Ops.VIEW, name="x", src=(UPat(), UPat.cvar(),)),)), lambda x,mv: x.view(unwrap(mv.st))),
-  (UPat(GroupOp.Movement, name="mv", src=(UPat.var("x"),)), mv2),
   (UPat(Ops.VIEW, name="v2", src=(UPat(Ops.VIEW, name="v1", src=(UPat(),)),)), lambda v1,v2: v1.replace(arg=v1.st+v2.st)),
 ])
 
@@ -599,6 +595,8 @@ def create_schedule_with_vars(outs:list[UOp], skip_check:bool=not __debug__) -> 
   sink = to_uop(UOp.sink(*outs), ctx:=ScheduleContext(), cache={})
   # const folding and fusion
   sink = graph_rewrite(sink, remove_movement_ops+ops_folding+do_realize, ctx)
+  unmerged_views = [x for x in sink.toposort if x.op in GroupOp.Movement]
+  assert len(unmerged_views) == 0, f"found {len(unmerged_views)} unmerged views! {unmerged_views[0]}"
   sink = graph_rewrite(sink, merge_bufs, ctx)
   # create the scheduler context
   graph_rewrite(sink, create_ctx, ctx)
