@@ -300,6 +300,21 @@ class TestAssign(unittest.TestCase):
     np.testing.assert_allclose(c.numpy(), a.sum(1).numpy()+2)
     np.testing.assert_allclose(d.numpy(), a.sum(1).numpy()+3)
 
+  def test_assign_multioutput_post_assign(self):
+    x = Tensor.randint((32,)).contiguous().realize()
+    y = Tensor.zeros((1,), dtype=dtypes.int).contiguous().realize()
+    z = Tensor.zeros((1,), dtype=dtypes.int).contiguous().realize()
+    r = x.sum().reshape((1,))
+    y.assign(r+1)
+    z.assign(r+2)
+    kc = GlobalCounters.kernel_count
+    Tensor.realize(add:=y+z)
+    assert GlobalCounters.kernel_count - kc == 1
+    np.testing.assert_allclose(add.tolist(), (x.numpy().sum()+1)+(x.numpy().sum()+2))
+    # NOTE: y and z are also realized in the same kernel
+    assert y.lazydata.realized is not None
+    assert z.lazydata.realized is not None
+
   # NOTE: if the assign target is read/write in a single kernel, it should be contiguous
 
   def test_permuted_assignment_correct(self):

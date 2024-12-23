@@ -57,10 +57,8 @@ tensor_uop_spec = PatternMatcher([
   (UPat(Ops.VIEW, name="view", src=(UPat(Ops.BUFFER, name="buf"),)),
    lambda view,buf: view.dtype == buf.dtype and view.size == buf.size and view.st.contiguous),
 
-  # ASSIGN changes the value of an existing buffer
-  (UPat(Ops.ASSIGN, name="assign", src=(UPat.var("target"), UPat.var("new_val"))), lambda assign,target,new_val:
-   # target must be a realized device buffer
-   (target.op is Ops.BUFFER or target.is_realized) and
+  # ASSIGN changes the value of a realized buffer
+  (UPat(Ops.ASSIGN, name="assign", src=(UPat.var("target"), UPat.var("new_val"))), lambda assign,target,new_val: target.is_realized and
    # dtype
    (assign.dtype == target.dtype == new_val.dtype)),
 
@@ -187,8 +185,6 @@ def elementwise_view_right(root:UOp) -> UOp|None:
   output_swizzle = swizzles[0]
   new_input_st = ShapeTracker.from_shape(output_swizzle.base.shape)
   ret = root.replace(src=tuple(x if not x.has_st else x.src[0] if x in swizzles else apply_swizzle(x.view(new_input_st)) for x in root.src))
-  # update the ASSIGN offset to match the new shape
-  if ret.op is Ops.ASSIGN and ret.arg is not None: ret = ret.replace(arg=ret.arg+new_input_st,)
   return ret if ret.op is Ops.STORE else ret.view(ShapeTracker.from_shape(output_swizzle.shape))
 
 def merge_double_reduce(root:UOp, first_reduce:UOp) -> UOp:
@@ -198,9 +194,9 @@ def merge_double_reduce(root:UOp, first_reduce:UOp) -> UOp:
 
 # push VIEW to stores
 view_right = merge_views+PatternMatcher([
-  # STORE(.., ASSIGN(VIEW, ..)) -> STORE(.., ASSIGN(..)).view()
+  # STORE(.., ASSIGN(VIEW, val)) -> STORE(.., val).view()
   (UPat(Ops.STORE, src=(UPat.var("b"), UPat.var("st"), UPat.assign(UPat.var("target"), UPat.var("val")))),
-   lambda b,target,st,val: None if target.st is None else apply_swizzle(UOp.store(b, st, UOp.assign(target.base.buf_uop, val)).view(target.st))),
+   lambda b,target,st,val: apply_swizzle(UOp.store(b, st, val).view(target.st))),
   # REDUCE(src.view(contiguous=False)) -> REDUCE(src.view(contiguous=True)).view()
   (UPat(Ops.REDUCE_AXIS, src=(UPat.var("src"),), name="r").view(name="v"), lambda v,r,src: None if v.st.contiguous else swizzle_r(r, src, v.st)),
   # REDUCE(src.view()) -> REDUCE(src).view()
