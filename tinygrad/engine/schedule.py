@@ -57,10 +57,8 @@ tensor_uop_spec = PatternMatcher([
   (UPat(Ops.VIEW, name="view", src=(UPat(Ops.BUFFER, name="buf"),)),
    lambda view,buf: view.dtype == buf.dtype and view.size == buf.size and view.st.contiguous),
 
-  # ASSIGN changes the value of an existing buffer
-  (UPat(Ops.ASSIGN, name="assign", src=(UPat.var("target"), UPat.var("new_val"))), lambda assign,target,new_val:
-   # target must be a realized device buffer
-   (target.op is Ops.BUFFER or target.is_realized) and
+  # ASSIGN changes the value of a realized buffer
+  (UPat(Ops.ASSIGN, name="assign", src=(UPat.var("target"), UPat.var("new_val"))), lambda assign,target,new_val: target.is_realized and
    # dtype
    (assign.dtype == target.dtype == new_val.dtype)),
 
@@ -603,7 +601,7 @@ def create_schedule_with_vars(outs:list[UOp], skip_check:bool=not __debug__) -> 
   # prune movement ops, do const folding and fusion
   # NOTE: constant masking must come BEFORE merging movement ops
   sink = graph_rewrite(sink, mask_consts+remove_movement_ops+ops_folding+do_realize, ctx)
-  unmerged_views = [x for x in sink.toposort if x.op in GroupOp.Movement or (x.op is Ops.VIEW and len(x.src) != 0 and x.src[0].op is Ops.VIEW)]
+  unmerged_views = [x for x in sink.toposort if x.op in GroupOp.Movement or (x.op is Ops.VIEW and any(y.op is Ops.VIEW for y in x.src))]
   assert len(unmerged_views) == 0, f"found {len(unmerged_views)} unmerged views! {unmerged_views[0]}"
   # after const folding, one UOp can be associated with multiple BUFFERs, merge them into a single BUFFER
   sink = graph_rewrite(sink, merge_bufs, ctx)
