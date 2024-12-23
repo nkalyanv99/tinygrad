@@ -586,7 +586,8 @@ def append_uop(ctx:ScheduleContext, view:UOp, buf_uop:UOp) -> None:
 create_ctx = PatternMatcher([(UPat(Ops.VIEW, name="view", src=(UPat(Ops.BUFFER, name="buf_uop"), UPat())), append_uop)])
 
 remove_movement_ops = PatternMatcher([
-  (UPat(GroupOp.Movement, name="x"), lambda x: x.base.view(unwrap(x.st))),
+  (UPat(GroupOp.Movement, name="mv", src=(UPat(Ops.VIEW, src=(UPat.var("x"),)),)), lambda x,mv: x.view(unwrap(mv.st))),
+  (UPat(GroupOp.Movement, name="mv", src=(UPat.var("x"),)), lambda x,mv: x.base.view(unwrap(mv.st))),
   (UPat(Ops.VIEW, name="v2", src=(UPat(Ops.VIEW, name="v1", src=(UPat(),)),)), lambda v1,v2: v1.replace(arg=v1.st+v2.st)),
 ])
 
