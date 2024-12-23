@@ -349,17 +349,6 @@ class UOp(MathTrait, metaclass=UOpMetaClass):
     if self.dtype == dtype: return self # TODO: move this to the scheduler
     if bitcast: return self.bitcast(dtype, allow_buffer_view)
     if self._device is not None and self._device.startswith("DISK"): raise RuntimeError("CAST isn't supported on DISK")
-    if getenv("CAST_BEFORE_VIEW", 1) and dtype.itemsize <= self.dtype.itemsize and self is not self.base:
-      # NOTE: we have to apply the movementops here, we can't use VIEW (yet)
-      # TODO: move this to the scheduler
-      ret = self.base.cast(dtype, bitcast)
-      op_arg = []
-      mop = self
-      while mop is not self.base:
-        op_arg.append((mop.op, mop.arg))
-        mop = mop.src[0]
-      for op,arg in reversed(op_arg): ret = UOp(op, ret.dtype, (ret,), arg)
-      return ret
     return UOp(Ops.CAST, dtype, (self,))
   def bitcast(self, dtype:DType, allow_buffer_view=True):
     if self.can_view() and allow_buffer_view:
@@ -448,14 +437,11 @@ class UOp(MathTrait, metaclass=UOpMetaClass):
     return UOp(Ops.VIEW, dtype, (UOp.new_buffer(device, (st:=ShapeTracker.from_shape(shape)).size, dtype), UOp(op, dtype, src, arg)), st)
   def copy_to_device(self, device:str, force=False, clone:bool=False) -> UOp:
     # no COPY
-    if self.device == device and not clone: return self
     # TODO: hack const metaop early here, fix this in multi
-    if self.is_unrealized_const(): return UOp.metaop(Ops.CONST, (), self.dtype, device, self.const_arg).view(unwrap(self.st))
     # if it's a shrink, do the shrink before the copy with CONTIGUOUS
-    if prod(self.shape) < prod(self.base.shape): return self.contiguous().copy_to_device(device)
     # copy the base and apply the shapetracker on the new device
-    if not unwrap((src:=self.base).st).contiguous: raise RuntimeError(f"can only copy contiguous {self}")
-    return UOp.metaop(Ops.COPY, src.shape, src.dtype, device, (device, clone), (src,)).view(unwrap(self.st))
+    src = self
+    return UOp.metaop(Ops.COPY, (src.size,), src.dtype, device, (device, clone), (src,)).view(unwrap(self.st))
   def clone(self) -> UOp: return self.copy_to_device(self.device, clone=True)
   def is_unrealized_const(self): return (s:=self.base).op is Ops.VIEW and len(s.src) == 2 and s.realized is None and s.src[1].op is Ops.CONST
   def is_unrealized_unmasked_const(self): return self.is_unrealized_const() and all(v.mask is None for v in unwrap(self.st).views)
