@@ -592,8 +592,11 @@ def create_schedule_with_vars(outs:list[UOp], skip_check:bool=not __debug__) -> 
   if not skip_check: type_verify(list(UOp.sink(*outs).toposort), extra_spec=tensor_uop_spec)
   # to_uop is removing (many) of the movement ops
   sink = to_uop(UOp.sink(*outs), ctx:=ScheduleContext(), cache={})
-  # const folding and fusion
+  # prune movement ops, do const folding and fusion
   sink = graph_rewrite(sink, remove_movement_ops+ops_folding+do_realize, ctx)
+  unmerged_views = [x for x in sink.toposort if x.op in GroupOp.Movement or (x.op is Ops.VIEW and len(x.src) != 0 and x.src[0].op is Ops.VIEW)]
+  assert len(unmerged_views) == 0, f"found {len(unmerged_views)} unmerged views!"
+  # after const folding, one UOp can be associated with multiple BUFFERs, merge them into a single BUFFER
   sink = graph_rewrite(sink, merge_bufs, ctx)
   # create the scheduler context
   graph_rewrite(sink, create_ctx, ctx)
