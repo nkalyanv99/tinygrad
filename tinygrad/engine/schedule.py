@@ -446,6 +446,10 @@ def replace_contiguous(ctx:ScheduleContext, alu:UOp):
     if (replace_src:=ctx.contiguous.get(s, None)) is not None: new_src[i] = replace_src
   if tuple(new_src) != alu.src: return alu.replace(src=tuple(new_src))
 
+def cast_folding(cast:UOp, x:UOp):
+  if x.st is None: raise Exception(cast)
+  return UOp.const(cast.dtype, x.const_arg) if all_int(x.shape) and x.is_unrealized_unmasked_const() else None
+
 ops_folding = PatternMatcher([
   # op with size 0 is zero
   (UPatScheduled(), lambda b,to_store,base: _as_const(base, 0) if base.size == 0 else None),
@@ -456,8 +460,7 @@ ops_folding = PatternMatcher([
   # elementwise const folding
   (UPat(GroupOp.ALU, name="alu"), simplify_alu),
   (UPat({Ops.ADD, Ops.MUL, Ops.IDIV}, name="binop", src=(UPat.var("x"), UPat.var("y"))), simplify_binop),
-  (UPat(Ops.CAST, src=(UPat.var("x"),), name="cast"),
-   lambda x,cast: UOp.const(cast.dtype, x.const_arg) if all_int(x.shape) and x.is_unrealized_unmasked_const() else None),
+  (UPat(Ops.CAST, src=(UPat.var("x"),), name="cast"), cast_folding),
   # reduce of size 0 is the identity element
   (UPat(Ops.REDUCE_AXIS, name="reduce", src=(UPat.var("x"),)),
    lambda reduce,x:UOp.const(reduce.dtype, identity_element(reduce.arg[0], reduce.dtype)) if x.size == 0 and reduce.size != 0 else None),
@@ -553,14 +556,13 @@ def unbind_variable(ctx:ScheduleContext, bind:UOp, st:UOp):
   return generate_const(UOp.const(bind.dtype, bind), st)
 
 def load_realized(ctx:ScheduleContext, b:UOp, st:UOp):
-  assert st.size == b.size and unwrap(st.st).contiguous, f"ShapeTracker of realized {b} BUFFER must match the BUFFER size {st}"
   # NOTE: if we're assigning to the BUFFER too, PRELOAD tells toposort to place this load before the ASSIGN
   return UOp(Ops.PRELOAD if b in ctx.assigns else Ops.LOAD, b.dtype.base, (b, unwrap(st.st).to_uop()))
 
 def store_or_fuse(ctx:ScheduleContext, b:UOp, x:UOp, st:UOp):
   if (m:=ctx.tensor_uops[b][0].metadata) is not None: ctx.ops_metadata[x] = m
   if b not in ctx.realizes: return x.view(unwrap(st.st)) # collapse BUFFER
-  ctx.realizes[b] = UOp.store(b, ShapeTracker.from_shape(x.shape).to_uop(), x)
+  ctx.realizes[b] = UOp.store(b, ShapeTracker.from_shape(st.shape if x.st is None else x.shape).to_uop(), x)
   return UOp(Ops.LOAD, x.dtype, (b, unwrap(st.st).to_uop()))
 
 break_sched = PatternMatcher([
@@ -585,9 +587,13 @@ def append_uop(ctx:ScheduleContext, view:UOp, buf_uop:UOp) -> None:
   buf_uop.buffer.ref(1)
 create_ctx = PatternMatcher([(UPat(Ops.VIEW, name="view", src=(UPat(Ops.BUFFER, name="buf_uop"), UPat())), append_uop)])
 
-remove_movement_ops = merge_views+PatternMatcher([
-  (UPat(GroupOp.Movement, name="x"), lambda x: x.base.view(unwrap(x.st))),
+mask_consts = PatternMatcher([
+  # VIEW(VIEW(CONST), mask=(...)) -> VALID(VIEW(mask=(...)), CONST, 0)
+  (UPat(Ops.VIEW, name="view", src=(UPat(Ops.VIEW, name="st", src=(UPat(), UPat.cvar("const"))),)),
+   lambda view,st,const: None if all(v.mask is None for v in view.st.views) else UOp(Ops.VALID, dtypes.bool, ((st.st+view.st).to_uop(),)).where(const, 0)),
 ])
+
+remove_movement_ops = merge_views+PatternMatcher([(UPat(GroupOp.Movement, name="x"), lambda x: x.base.view(unwrap(x.st))),])
 
 @track_rewrites(named=True)
 def create_schedule_with_vars(outs:list[UOp], skip_check:bool=not __debug__) -> tuple[list[ScheduleItem], dict[Variable, int]]:
@@ -595,9 +601,10 @@ def create_schedule_with_vars(outs:list[UOp], skip_check:bool=not __debug__) -> 
   # to_uop is removing (many) of the movement ops
   sink = to_uop(UOp.sink(*outs), ctx:=ScheduleContext(), cache={})
   # prune movement ops, do const folding and fusion
-  sink = graph_rewrite(sink, remove_movement_ops+ops_folding+do_realize, ctx)
+  # NOTE: constant masking must come BEFORE merging movement ops
+  sink = graph_rewrite(sink, mask_consts+remove_movement_ops+ops_folding+do_realize, ctx)
   unmerged_views = [x for x in sink.toposort if x.op in GroupOp.Movement or (x.op is Ops.VIEW and len(x.src) != 0 and x.src[0].op is Ops.VIEW)]
-  assert len(unmerged_views) == 0, f"found {len(unmerged_views)} unmerged views!"
+  assert len(unmerged_views) == 0, f"found {len(unmerged_views)} unmerged views! {unmerged_views[0]}"
   # after const folding, one UOp can be associated with multiple BUFFERs, merge them into a single BUFFER
   sink = graph_rewrite(sink, merge_bufs, ctx)
   # create the scheduler context

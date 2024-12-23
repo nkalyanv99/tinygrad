@@ -223,6 +223,7 @@ class UOpMetaClass(type):
     UOpMetaClass.ucache[key] = weakref.ref(created:=super().__call__(*key))
     # NOTE: this will soon be set by Tensor once we remove function.py
     if (metadata:=_METADATA.get()) is not None: all_metadata[created] = metadata
+    if created.op is Ops.CAST and created.src[0].op is Ops.BUFFER: raise Exception("wtf")
     return created
 
 # some uops map to other stuff
@@ -349,17 +350,6 @@ class UOp(MathTrait, metaclass=UOpMetaClass):
     if self.dtype == dtype: return self # TODO: move this to the scheduler
     if bitcast: return self.bitcast(dtype, allow_buffer_view)
     if self._device is not None and self._device.startswith("DISK"): raise RuntimeError("CAST isn't supported on DISK")
-    if getenv("CAST_BEFORE_VIEW", 1) and dtype.itemsize <= self.dtype.itemsize and self is not self.base:
-      # NOTE: we have to apply the movementops here, we can't use VIEW (yet)
-      # TODO: move this to the scheduler
-      ret = self.base.cast(dtype, bitcast)
-      op_arg = []
-      mop = self
-      while mop is not self.base:
-        op_arg.append((mop.op, mop.arg))
-        mop = mop.src[0]
-      for op,arg in reversed(op_arg): ret = UOp(op, ret.dtype, (ret,), arg)
-      return ret
     return UOp(Ops.CAST, dtype, (self,))
   def bitcast(self, dtype:DType, allow_buffer_view=True):
     if self.can_view() and allow_buffer_view:
@@ -451,6 +441,7 @@ class UOp(MathTrait, metaclass=UOpMetaClass):
     if self.device == device and not clone: return self
     # TODO: hack const metaop early here, fix this in multi
     if self.is_unrealized_const(): return UOp.metaop(Ops.CONST, (), self.dtype, device, self.const_arg).view(unwrap(self.st))
+    if self.base.st is None: return UOp.metaop(Ops.COPY, self.shape, self.dtype, device, (device, clone), (self,)).view(unwrap(self.st))
     # if it's a shrink, do the shrink before the copy with CONTIGUOUS
     if prod(self.shape) < prod(self.base.shape): return self.contiguous().copy_to_device(device)
     # copy the base and apply the shapetracker on the new device
@@ -481,7 +472,7 @@ class UOp(MathTrait, metaclass=UOpMetaClass):
   @property
   def base(self) -> UOp:
     if self.op in GroupOp.Movement: return self.src[0].base
-    return self.src[0] if self.op is Ops.VIEW and len(self.src) == 1 and self.src[0].op is not Ops.BUFFER else self
+    return self.src[0] if self.op is Ops.VIEW and len(self.src) == 1 else self
   def view(self, new_st:ShapeTracker) -> UOp: return UOp(Ops.VIEW, self.dtype, (self.base,), new_st)
 
   def _mop(self, op:Ops, arg):
@@ -512,13 +503,12 @@ class UOp(MathTrait, metaclass=UOpMetaClass):
     return dsrcs[0]._device if len(dsrcs:=[x for x in self.src if x._device is not None]) != 0 else None
   @property
   def buf_uop(self) -> UOp:
-    if self.op is Ops.BUFFER: return self
+    if self.base.op is Ops.BUFFER: return self
     assert self.base.op in {*GroupOp.Buffer, Ops.ASSIGN, Ops.VIEW}, f"buf_uop called on {self.op}"
     return self.src[0].buf_uop
   def buf_uop_view(self) -> UOp: return self.buf_uop.view(unwrap(self.st))
   @property
   def buffer(self) -> Buffer:
-    if self.base.realized is not None: return self.base.realized
     if (ret:=buffers.get(self)) is not None: return ret
     if self.op is Ops.VIEW:
       assert unwrap(self.st).contiguous, "VIEW only works here if it's contiguous"
@@ -529,7 +519,7 @@ class UOp(MathTrait, metaclass=UOpMetaClass):
     return ret
   @property
   def realized(self) -> Optional[Buffer]:
-    if self.op is Ops.VIEW and len(self.src) == 1 and self.src[0].op is Ops.BUFFER: return buffers[self.src[0]]
+    if self.base.op is Ops.BUFFER: return buffers.get(self.base)
     return None
   @property
   def is_realized(self) -> bool: return self.base.realized is not None
