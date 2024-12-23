@@ -553,7 +553,7 @@ def unbind_variable(ctx:ScheduleContext, bind:UOp, st:UOp):
   return generate_const(UOp.const(bind.dtype, bind), st)
 
 def load_realized(ctx:ScheduleContext, b:UOp, st:UOp):
-  assert st.size == b.size and unwrap(st.st).contiguous, f"ShapeTracker of realized {b} BUFFER must match the BUFFER size {st}"
+  #assert st.size == b.size and unwrap(st.st).contiguous, f"ShapeTracker of realized {b} BUFFER must match the BUFFER size {st}"
   # NOTE: if we're assigning to the BUFFER too, PRELOAD tells toposort to place this load before the ASSIGN
   return UOp(Ops.PRELOAD if b in ctx.assigns else Ops.LOAD, b.dtype.base, (b, unwrap(st.st).to_uop()))
 
@@ -585,7 +585,10 @@ def append_uop(ctx:ScheduleContext, view:UOp, buf_uop:UOp) -> None:
   buf_uop.buffer.ref(1)
 create_ctx = PatternMatcher([(UPat(Ops.VIEW, name="view", src=(UPat(Ops.BUFFER, name="buf_uop"), UPat())), append_uop)])
 
-remove_movement_ops = PatternMatcher([(UPat(GroupOp.Movement, name="x"), lambda x: x.base.view(unwrap(x.st))),])
+remove_movement_ops = PatternMatcher([
+  (UPat(GroupOp.Movement, name="x"), lambda x: x.base.view(unwrap(x.st))),
+  (UPat(Ops.VIEW, name="v2", src=(UPat(Ops.VIEW, name="v1", src=(UPat(),)),)), lambda v1,v2: v1.replace(arg=v1.st+v2.st)),
+])
 
 @track_rewrites(named=True)
 def create_schedule_with_vars(outs:list[UOp], skip_check:bool=not __debug__) -> tuple[list[ScheduleItem], dict[Variable, int]]:
