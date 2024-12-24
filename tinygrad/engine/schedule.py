@@ -49,7 +49,7 @@ tensor_uop_spec = PatternMatcher([
   # ** specs with room for refactoring and improving
 
   # COPY
-  (UPat(Ops.COPY, name="copy", src=(UPat.var("copyin"),)), lambda copy,copyin:
+  (UPat(Ops.COPY, name="copy", src=(UPat(Ops.VIEW, src=(UPat(Ops.BUFFER),)), UPat.var("copyin"),)), lambda copy,copyin:
    # arg (device, clone?)
    isinstance(copy.arg, tuple) and len(copy.arg) == 2 and isinstance(copy.arg[0], str) and isinstance(copy.arg[1], bool) and \
    # dtype
@@ -77,13 +77,12 @@ tensor_uop_spec = PatternMatcher([
   (UPat(Ops.VIEW, src=(UPat(Ops.DEVICE), UPat(Ops.BIND))), lambda: True),
 
   # NOTE: EMPTY just ensures the source BUFFER is allocated before children run
-  # TODO: this should be EMPTY(VIEW(BUFFER))
-  (UPat(Ops.EMPTY, src=(), arg=None), lambda: True),
+  (UPat(Ops.EMPTY, src=(UPat(Ops.VIEW, src=(UPat(Ops.BUFFER),),)), arg=None), lambda: True),
 
   # TODO: BUFFER_VIEW is overloaded, can we break it into multiple well defined UOps?
   # BUFFER_VIEW shares the device buffer with its source, it uses a subbuffer of the underlying source buffer
 
-  (UPat(Ops.BUFFER_VIEW, name="root", src=(UPat.var("x"),)), lambda root,x:
+  (UPat(Ops.BUFFER_VIEW, name="root", src=(UPat(Ops.VIEW, src=(UPat(Ops.BUFFER),)), UPat.var("x"),)), lambda root,x:
    # BUFFER_VIEW can replace contiguous, keeping dtype the same
    (root.dtype == x.dtype) or
    # it can also replace bitcast, this changes the dtype, but the itemsize stays the same
@@ -145,9 +144,8 @@ def to_uop(buf:UOp, ctx:ScheduleContext, cache:dict[UOp, UOp]) -> UOp:
     if DEBUG >= 2: print(f"forcing image {dtype} with shape {buf.shape} to {dtype.base}")
     dtype = buf.dtype.base
   # meta ops and assign already have a target buffer, otherwise we create a new one
-  buf_uop = buf.buf_uop if buf.op in {Ops.ASSIGN, Ops.VIEW} else UOp.new_buffer(buf.device, buf.size, dtype)
-  if buf.op is Ops.VIEW: op = buf.src[1].replace(src=tuple(to_uop(x, ctx, cache) for x in buf.src[1].src))
-  else: op = buf.replace(dtype=dtype.base, src=tuple(to_uop(x, ctx, cache) for x in buf.src))
+  buf_uop = buf.buf_uop if buf.op in {Ops.ASSIGN, *GroupOp.Meta} else UOp.new_buffer(buf.device, buf.size, dtype)
+  op = buf.replace(dtype=dtype.base, src=tuple(to_uop(x, ctx, cache) for x in buf.src))
   # track the underlying tensor uop for this op
   ctx.tensor_uops[buf_uop] = [buf]
   # (early) bufferize
@@ -570,7 +568,7 @@ def append_uop(ctx:ScheduleContext, view:UOp, buf_uop:UOp) -> None:
     if is_scheduled(x.base): ctx.children.setdefault(x.base.buf_uop, {})[buf_uop] = None
   # BUFFER_VIEW overrides the underlying buffer
   if op.op is Ops.BUFFER_VIEW:
-    buffers[buf_uop] = (x:=op.src[0]).base.buffer.view(view.size, view.dtype, unwrap(x.st).views[0].offset*x.dtype.itemsize)
+    buffers[buf_uop] = (x:=op.src[1]).base.buffer.view(view.size, view.dtype, unwrap(x.st).views[0].offset*x.dtype.itemsize)
   buf_uop.buffer.ref(1)
 create_ctx = PatternMatcher([(UPat(Ops.VIEW, name="view", src=(UPat(Ops.BUFFER, name="buf_uop"), UPat())), append_uop)])
 

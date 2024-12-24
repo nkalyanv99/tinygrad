@@ -447,8 +447,9 @@ class UOp(MathTrait, metaclass=UOpMetaClass):
     if op is Ops.BIND:
       assert isinstance(arg, UOp) and arg.op is Ops.BIND and shape == (), f"trying to create BIND with {arg=} {shape=}"
       return UOp(Ops.VIEW, dtype, (UOp(Ops.DEVICE, arg=device), arg), ShapeTracker.from_shape(()))
-    # otherwise it's a contiguous st
-    return UOp(Ops.VIEW, dtype, (UOp.new_buffer(device, (st:=ShapeTracker.from_shape(shape)).size, dtype), UOp(op, dtype, src, arg)), st)
+    # otherwise it's a UOp(BUFFER.view(), *src)
+    # NOTE: we create a BUFFER UOp on construction to make the UOp unique
+    return UOp(op, dtype, (UOp.new_buffer(device, (st:=ShapeTracker.from_shape(shape)).size, dtype).view(st), *src), arg)
   def copy_to_device(self, device:str, force=False, clone:bool=False) -> UOp:
     # no COPY
     if self.device == device and not clone: return self
@@ -521,7 +522,7 @@ class UOp(MathTrait, metaclass=UOpMetaClass):
   @property
   def buf_uop(self) -> UOp:
     if self.op is Ops.BUFFER: return self
-    assert self.base.op in {*GroupOp.Buffer, Ops.ASSIGN, Ops.VIEW}, f"buf_uop called on {self.op}"
+    assert self.base.op in {*GroupOp.Buffer, *GroupOp.Meta, Ops.ASSIGN, Ops.VIEW}, f"buf_uop called on {self.op}"
     return self.src[0].buf_uop
   def buf_uop_view(self) -> UOp: return self.buf_uop.view(unwrap(self.st))
   @property
@@ -531,13 +532,14 @@ class UOp(MathTrait, metaclass=UOpMetaClass):
     if self.op is Ops.VIEW:
       assert unwrap(self.st).contiguous, "VIEW only works here if it's contiguous"
       return self.src[0].buffer
+    if self.op is Ops.EMPTY: return self.buf_uop.buffer
     assert self.op is Ops.BUFFER, f"must be BUFFER {self.op}"
     from tinygrad.device import Buffer
     buffers[self] = ret = Buffer(self.device, self.size, self.dtype if isinstance(self.dtype, ImageDType) else self.dtype.base)
     return ret
   @property
   def realized(self) -> Optional[Buffer]:
-    if self.op is Ops.VIEW and len(self.src) == 1 and self.src[0].op is Ops.BUFFER: return buffers[self.src[0]]
+    if self.op is Ops.VIEW and len(self.src) == 1 and self.src[0].op is Ops.BUFFER: return buffers.get(self.src[0])
     return None
   @property
   def is_realized(self) -> bool: return self.base.realized is not None
