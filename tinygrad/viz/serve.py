@@ -64,7 +64,7 @@ def uop_to_json(x:UOp) -> dict[int, tuple[str, str, list[int], str, str]]:
   graph: dict[int, tuple[str, str, list[int], str, str]] = {}
   excluded = set()
   for u in x.toposort:
-    if u.op in {Ops.CONST, Ops.DEVICE}:
+    if u.op in {Ops.CONST, Ops.DEVICE} or (u.op is Ops.VIEW and len(u.src) == 1 and u.src[0].op is Ops.DEVICE):
       excluded.add(u)
       continue
     argst = str(u.arg)

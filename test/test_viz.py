@@ -1,6 +1,6 @@
 from typing import Dict, List, Optional
 import unittest, decimal, json
-from tinygrad.dtype import dtypes
+from tinygrad import Tensor, dtypes
 from tinygrad.ops import TRACK_MATCH_STATS, TrackedPatternMatcher as PatternMatcher, UOp, Ops, UPat, graph_rewrite, track_rewrites, symbolic
 from tinygrad.ops import tracked_ctxs as contexts, tracked_keys as keys
 from tinygrad.device import ProfileDeviceEvent, ProfileRangeEvent, ProfileGraphEvent, ProfileGraphEntry
@@ -91,6 +91,10 @@ class TestViz(unittest.TestCase):
     graph = uop_to_json(a)
     assert not any(v[0].startswith("CONST") for v in graph.values())
     assert len([x for x in graph.values() if "CONST" in x[0]]) == 1
+
+    a = Tensor(1)
+    graph = uop_to_json(a.lazydata)
+    assert len(graph) == 0, f"const uop shouldn't render any nodes, rendered: {graph}"
 
   @unittest.skip("TODO: bring this back with better testing")
   def test_bottom_up_rewrite(self):
