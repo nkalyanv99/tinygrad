@@ -243,6 +243,8 @@ to_si = PatternMatcher([
   # don't need contiguous or assign anymore
   (UPat(Ops.CONTIGUOUS, src=(UPat.var("x"),)), lambda x: x),
   (UPat(Ops.ASSIGN, src=(UPat(), UPat.var("x"),)), lambda x: x),
+  # once we load an image Buffer onto registers, it becomes the base dtype
+  (UPat(set(Ops), name="x"), lambda x: x.replace(dtype=x.dtype.base) if isinstance(x.dtype, ImageDType) and x.op is not Ops.BUFFER else None),
 ])
 
 add_metadata = PatternMatcher([(UPat(tuple(Ops), name="x"), lambda ctx,x: None if (m:=ctx.ops_metadata.get(x)) is None else ctx.metadata.add(m)),])
@@ -543,7 +545,15 @@ def load_realized(ctx:ScheduleContext, b:UOp, st:UOp):
 def store_or_fuse(ctx:ScheduleContext, b:UOp, x:UOp, st:UOp):
   if (m:=ctx.tensor_uops[b][0].metadata) is not None: ctx.ops_metadata[x] = m
   if b not in ctx.realizes: return x # collapse BUFFER
-  ctx.realizes[b] = UOp.store(b, ShapeTracker.from_shape(st.shape).to_uop(), x)
+  output_st = ShapeTracker.from_shape(st.shape)
+  ctx.realizes[b] = UOp.store(b, output_st.to_uop(), x)
+  if isinstance(b.dtype, ImageDType):
+    # if the output ShapeTracker doesn't allow us to INDEX into an image buffer, we STORE it as the base dtype
+    # and load a casted version
+    # this was, "make things that can't be images not images"
+    if prod(output_st.shape) != prod(b.dtype.shape) or not any(output_st.shape[x]%4 == 0 for x in output_st.unit_stride_axes()):
+      b.become(b.replace(dtype=b.dtype.base))
+      del buffers[b]
   return UOp(Ops.LOAD, x.dtype, (b, unwrap(st.st).to_uop()))
 
 break_sched = PatternMatcher([
