@@ -43,7 +43,7 @@ class TestImageDType(unittest.TestCase):
     data = Tensor.randn(9*27*4).realize()
     tst = data.numpy()
     it = data.cast(dtypes.imagef((9,27,4))).realize()
-    assert isinstance(it.lazydata.base.realized.dtype, ImageDType)
+    self.assertIsInstance(it.lazydata.base.realized.dtype, ImageDType)
     np.testing.assert_equal(tst, it.numpy())
 
   def test_image_and_back_wrong_shape(self):
