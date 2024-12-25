@@ -139,19 +139,14 @@ def to_uop(buf:UOp, ctx:ScheduleContext, cache:dict[UOp, UOp]) -> UOp:
   if buf is not buf.base:
     cache[buf] = ret = to_uop(buf.base, ctx, cache).view(buf.st)
     return ret
-  # make things that can't be images not images
-  dtype = buf.dtype
-  if isinstance(dtype, ImageDType) and (prod(buf.shape) != prod(dtype.shape) or not any(buf.shape[x]%4 == 0 for x in buf.st.unit_stride_axes())):
-    if DEBUG >= 2: print(f"forcing image {dtype} with shape {buf.shape} to {dtype.base}")
-    dtype = buf.dtype.base
   # meta ops and assign already have a target buffer, otherwise we create a new one
-  buf_uop = buf.buf_uop if buf.op in {Ops.ASSIGN, Ops.VIEW} else UOp.new_buffer(buf.device, buf.size, dtype)
+  buf_uop = buf.buf_uop if buf.op in {Ops.ASSIGN, Ops.VIEW} else UOp.new_buffer(buf.device, buf.size, buf.dtype)
   if buf.op is Ops.VIEW: op = buf.src[1].replace(src=tuple(to_uop(x, ctx, cache) for x in buf.src[1].src))
-  else: op = buf.replace(dtype=dtype, src=tuple(to_uop(x, ctx, cache) for x in buf.src))
+  else: op = buf.replace(src=tuple(to_uop(x, ctx, cache) for x in buf.src))
   # track the underlying tensor uop for this op
   ctx.tensor_uops[buf_uop] = [buf]
   # (early) bufferize
-  cache[buf] = ret = UOp(Ops.VIEW, dtype, (buf_uop, op.alu(Ops.CONTIGUOUS) if buf.forced_realize else op), buf.st)
+  cache[buf] = ret = UOp(Ops.VIEW, buf.dtype, (buf_uop, op.alu(Ops.CONTIGUOUS) if buf.forced_realize else op), buf.st)
   return ret
 
 # **** AST graph rewrite
@@ -543,7 +538,7 @@ def unbind_variable(ctx:ScheduleContext, bind:UOp, st:UOp):
 def load_realized(ctx:ScheduleContext, b:UOp, st:UOp):
   assert st.size == b.size and unwrap(st.st).contiguous, f"ShapeTracker of realized {b} BUFFER must match the BUFFER size {st}"
   # NOTE: if we're assigning to the BUFFER too, PRELOAD tells toposort to place this load before the ASSIGN
-  return UOp(Ops.PRELOAD if b in ctx.assigns else Ops.LOAD, b.dtype.base, (b, unwrap(st.st).to_uop()))
+  return UOp(Ops.PRELOAD if b in ctx.assigns else Ops.LOAD, st.dtype, (b, unwrap(st.st).to_uop()))
 
 def store_or_fuse(ctx:ScheduleContext, b:UOp, x:UOp, st:UOp):
   if (m:=ctx.tensor_uops[b][0].metadata) is not None: ctx.ops_metadata[x] = m

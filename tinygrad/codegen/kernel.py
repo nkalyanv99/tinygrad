@@ -5,7 +5,7 @@ from collections import defaultdict
 from typing import Optional, cast, Final, Callable, Sequence
 from enum import Enum, auto
 
-from tinygrad.ops import GroupOp, KernelInfo, UOp, Ops, can_pad, print_uops, type_verify, resolve, Variable, sint, \
+from tinygrad.ops import GroupOp, KernelInfo, PatternMatcher, UOp, Ops, UPat, can_pad, print_uops, type_verify, resolve, Variable, sint, \
   graph_rewrite, track_rewrites, view_left
 from tinygrad.device import Device
 from tinygrad.renderer import Renderer, TensorCore, ProgramSpec
@@ -583,6 +583,7 @@ class Kernel:
     @functools.lru_cache(None)
     def fixup_ast(op:UOp) -> UOp:
       ret = op.replace(src=tuple(fixup_ast(x) for x in op.src))
+      if isinstance(ret.dtype, ImageDType) and ret.op is not Ops.DEFINE_GLOBAL: ret = ret.replace(dtype=ret.dtype.base)
       if op.op in GroupOp.Buffer and op in self.bufs:
         st_uop = self.sts[self.bufs.index(op)].to_uop()
         return ret.replace(src=(st_uop,)) if op.op is Ops.VALID else ret.replace(src=(ret.src[0], st_uop, *ret.src[2:]))
