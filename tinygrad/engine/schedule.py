@@ -551,9 +551,15 @@ def store_or_fuse(ctx:ScheduleContext, b:UOp, x:UOp, st:UOp):
   ctx.realizes[b] = UOp.store(b, ShapeTracker.from_shape(st.shape).to_uop(), x)
   return UOp(Ops.LOAD, x.dtype, (b, unwrap(st.st).to_uop()))
 
+def flatten_const(x:UOp, st:UOp) -> UOp:
+  const = UOp.const(x.dtype.base, x.const_arg)
+  if all(v.mask is None for v in unwrap(st.st).views): return const
+  return const.valid(unwrap(st.st))
+
 break_sched = PatternMatcher([
   # CONST is always fused and generated
-  (UPat(Ops.CONST, name="x", src=(UPat(Ops.VIEW, name="st"),)), lambda x,st: UOp.const(x.dtype.base, x.const_arg).valid(st.st)),
+  (UPat(Ops.CONST, name="x", src=(UPat(Ops.VIEW, name="st"),)), flatten_const),
+  (UPat.cvar("x").view(name="st"), flatten_const),
   (UPat(Ops.VIEW, name="st", src=(UPat(Ops.DEVICE), UPat(Ops.BIND, name="bind"))), unbind_variable),
   # VIEW of BUFFER either becomes a LOAD/STORE or we fuse it
   (UPat(Ops.VIEW, name="st", src=(UPat(Ops.BUFFER, name="b"),)), load_realized),
