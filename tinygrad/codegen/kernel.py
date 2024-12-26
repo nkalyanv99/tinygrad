@@ -5,7 +5,7 @@ from collections import defaultdict
 from typing import Optional, cast, Final, Callable, Sequence
 from enum import Enum, auto
 
-from tinygrad.ops import GroupOp, KernelInfo, UOp, Ops, can_pad, print_uops, type_verify, resolve, Variable, sint, \
+from tinygrad.ops import GroupOp, KernelInfo, PatternMatcher, UOp, Ops, UPat, can_pad, print_uops, type_verify, resolve, Variable, sint, \
   graph_rewrite, track_rewrites, view_left
 from tinygrad.device import Device
 from tinygrad.renderer import Renderer, TensorCore, ProgramSpec
@@ -54,8 +54,7 @@ class TensorCoreOptions:
 
 class Kernel:
   def __init__(self, ast:UOp, opts:Optional[Renderer]=None):
-    if ast.op is Ops.SINK: self.ast = ast
-
+    self.ast = ast
     self.opts = opts if opts is not None else Device[Device.DEFAULT].renderer
     try: uop_sts_map = verify_ast(self.ast)
     except AssertionError as e:
@@ -716,12 +715,15 @@ def _assert_valid_uop(uop:UOp, st:ShapeTracker, sts:dict[UOp, ShapeTracker]) -> 
       raise AssertionError(f"found implicit expand {sizes} {shapes}")
   sts[uop] = st
 
+# TODO: add shape asserts to this spec
+ast_spec = PatternMatcher([
+  (UPat(Ops.SINK, src=UPat(Ops.STORE), name="sink"), lambda sink: all_same([x.size for x in sink.src])),
+])
+
 def verify_ast(ast:UOp) -> dict[UOp, ShapeTracker]:
-  assert ast.op is Ops.SINK and all(x.op is Ops.STORE for x in ast.src), "must be SINK"
-  assert all_same([x.st_arg.size for x in ast.src]), "outputs must be exactly the same size"
+  type_verify(list(ast.toposort), extra_spec=ast_spec)
   sts: dict[UOp, ShapeTracker] = {}
   for out in ast.src: _assert_valid_uop(out, out.st_arg, sts)
   shape_dims = [sorted(dedup(dims)) for dims in zip(*[x.shape for x in sts.values()])]
   assert all(len(x) == 1 or (len(x) == 2 and x[0] == 1) for x in shape_dims), f"shapes must have either 1 or n in each dimension, {shape_dims}"
-  type_verify(list(sts))
   return sts
