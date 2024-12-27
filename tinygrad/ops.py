@@ -280,6 +280,10 @@ class UOp(MathTrait, metaclass=UOpMetaClass):
     # these uops define ShapeTracker from the arg
     if self.op is Ops.VIEW: return self.arg
     if self.op in GroupOp.Movement: return unwrap(self.src[0].st).mop(self.op, self.arg)
+    # buffer is just a flat, contiguous (N,)
+    if self.op is Ops.BUFFER:
+      from tinygrad.shape.shapetracker import ShapeTracker
+      return ShapeTracker.from_shape((self.size,))
     # otherwise we derive the st from sources
     if len(src_sts:=[x.st for x in self.src if x.st is not None]) == 0: return None
     assert all_same([x.shape for x in src_sts]), f"UOp parents must have the same shape {self} {[x.shape for x in src_sts]}"
@@ -481,13 +485,7 @@ class UOp(MathTrait, metaclass=UOpMetaClass):
   def base(self) -> UOp:
     if self.op in GroupOp.Movement: return self.src[0].base
     return self.src[0] if self.op is Ops.VIEW and len(self.src) == 1 and self.src[0].op is not Ops.BUFFER else self
-  def view(self, new_st:ShapeTracker) -> UOp:
-    if self.st is None: return UOp(Ops.VIEW, self.dtype.base if not isinstance(self.dtype, ImageDType) else self.dtype, (self,), new_st)
-    ret = UOp(Ops.VIEW, self.dtype, (self.base,), new_st)
-    # instant folding rules
-    if self.st.size == 0 or (new_st.views[-1].mask is not None and any((x[1]-x[0]) == 0 for x in new_st.views[-1].mask)): return ret.const_like(0)
-    if new_st.contiguous and self.base.shape == new_st.shape: return self.base
-    return ret
+  def view(self, new_st:ShapeTracker) -> UOp: return UOp(Ops.VIEW, self.dtype, (self.base,), new_st)
 
   def _mop(self, op:Ops, arg):
     ret = UOp(op, self.dtype, (self,), arg)
@@ -516,7 +514,7 @@ class UOp(MathTrait, metaclass=UOpMetaClass):
     return dsrcs[0]._device if len(dsrcs:=[x for x in self.src if x._device is not None]) != 0 else None
   @property
   def buf_uop(self) -> UOp:
-    if self.op is Ops.BUFFER: return self
+    if self.base.op is Ops.BUFFER: return self.base
     assert self.base.op in {*GroupOp.Buffer, Ops.ASSIGN, Ops.VIEW}, f"buf_uop called on {self.op}"
     return self.src[0].buf_uop
   def buf_uop_view(self) -> UOp: return self.buf_uop.view(unwrap(self.st))
