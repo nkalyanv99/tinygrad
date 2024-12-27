@@ -370,7 +370,7 @@ class UOp(MathTrait, metaclass=UOpMetaClass):
         # https://pytorch.org/docs/stable/generated/torch.Tensor.view.html
         if (self.shape[-1]*self.dtype.itemsize) % dtype.itemsize != 0: raise RuntimeError("unsupported size in bitcast")
         output_shape = self.shape[:-1]+((self.shape[-1]*self.dtype.itemsize) // dtype.itemsize,)
-      return UOp.metaop(Ops.BUFFER_VIEW, output_shape, dtype, self.device, None, (self,))
+      return UOp.metaop(Ops.BUFFER_VIEW, output_shape, dtype, self.device, None, (self.reshape(output_shape),))
     return UOp(Ops.BITCAST, dtype, (self,))
   def gep(self, i:Union[tuple[int, ...], int]):
     if isinstance(i, int):
@@ -534,7 +534,8 @@ class UOp(MathTrait, metaclass=UOpMetaClass):
     return ret
   @property
   def realized(self) -> Optional[Buffer]:
-    if self.op is Ops.VIEW and len(self.src) == 1 and self.src[0].op is Ops.BUFFER: return buffers[self.src[0]]
+    # NOTE: VIEW(BUFFER) can be unrealized, eg in metaop sources
+    if self.op is Ops.VIEW and len(self.src) == 1 and self.src[0].op is Ops.BUFFER: return buffers.get(self.src[0])
     return None
   @property
   def is_realized(self) -> bool: return self.base.realized is not None
