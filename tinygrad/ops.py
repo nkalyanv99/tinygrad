@@ -284,8 +284,6 @@ class UOp(MathTrait, metaclass=UOpMetaClass):
     # these uops have a contiguous ShapeTracker
     from tinygrad.shape.shapetracker import ShapeTracker
     match self.op:
-      # buffer has shape=(N,)
-      #case Ops.BUFFER: shape = (self.size,)
       # only reduceop is allowed to change shape
       case Ops.REDUCE_AXIS | Ops.WMMA: shape = unwrap(self.src[0].st).reduce(self.axis_arg)
       # otherwise we derive the st from sources
@@ -326,9 +324,7 @@ class UOp(MathTrait, metaclass=UOpMetaClass):
   @property
   def st_arg(self) -> ShapeTracker:
     assert self.op in GroupOp.Buffer, f"st_arg called on {self.op}"
-    ret = self.src[0 if self.op is Ops.VALID else 1]
-    assert ret.op is Ops.VIEW, f"st_arg trying to return {ret}"
-    return ret.arg
+    return unwrap(self.st)
   @property
   def const_arg(self) -> ConstType:
     match self.base.op:
