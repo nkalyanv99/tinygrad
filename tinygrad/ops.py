@@ -280,11 +280,14 @@ class UOp(MathTrait, metaclass=UOpMetaClass):
     # these uops define ShapeTracker from the arg
     if self.op is Ops.VIEW: return self.arg
     if self.op in GroupOp.Movement: return unwrap(self.src[0].st).mop(self.op, self.arg)
+    if self.op is Ops.BUFFER:
+      from tinygrad.shape.shapetracker import ShapeTracker
+      return ShapeTracker.from_shape((self.size,))
     # otherwise we derive the st from sources
     if len(src_sts:=[x.st for x in self.src if x.st is not None]) == 0: return None
-    assert all_same([x.shape for x in src_sts]), f"UOp parents must have the same shape {self} {[x.shape for x in src_sts]}"
     # st_arg on buffer uops defines the ShapeTracker, it's allowed to be non contiguous
     if self.op in GroupOp.Buffer: return self.st_arg
+    assert all_same([x.shape for x in src_sts]), f"UOp parents must have the same shape {self} {[x.shape for x in src_sts]}"
     # all other uops have a contiguous ShapeTracker
     from tinygrad.shape.shapetracker import ShapeTracker
     # only reduceop is allowed to change shape
@@ -482,7 +485,7 @@ class UOp(MathTrait, metaclass=UOpMetaClass):
     if self.op in GroupOp.Movement: return self.src[0].base
     return self.src[0] if self.op is Ops.VIEW and len(self.src) == 1 and self.src[0].op is not Ops.BUFFER else self
   def view(self, new_st:ShapeTracker) -> UOp:
-    if self.st is None: return UOp(Ops.VIEW, self.dtype.base if not isinstance(self.dtype, ImageDType) else self.dtype, (self,), new_st)
+    if self.op is Ops.BUFFER: return UOp(Ops.VIEW, self.dtype.base if not isinstance(self.dtype, ImageDType) else self.dtype, (self,), new_st)
     ret = UOp(Ops.VIEW, self.dtype, (self.base,), new_st)
     # instant folding rules
     if self.st.size == 0 or (new_st.views[-1].mask is not None and any((x[1]-x[0]) == 0 for x in new_st.views[-1].mask)): return ret.const_like(0)
