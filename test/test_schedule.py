@@ -13,7 +13,7 @@ from tinygrad.device import is_dtype_supported
 from tinygrad.dtype import DType, ImageDType
 from tinygrad.shape.shapetracker import ShapeTracker
 from tinygrad.shape.view import View
-from tinygrad.ops import PatternMatcher, UOp, Ops, UPat, graph_rewrite, track_rewrites, view_supported_devices, symbolic, merge_views
+from tinygrad.ops import GroupOp, PatternMatcher, UOp, Ops, UPat, graph_rewrite, track_rewrites, view_supported_devices, symbolic, merge_views
 from tinygrad.helpers import CI, DEBUG, FUSE_ARANGE, GlobalCounters, flatten, getenv, SPLIT_REDUCEOP, unwrap, prod, Context
 from tinygrad.codegen.kernel import Kernel, verify_ast
 from tinygrad.engine.schedule import BUF_LIMIT, ScheduleContext, ScheduleItem, create_schedule, view_right, view_left, remove_movement_ops, to_uop
@@ -2133,8 +2133,9 @@ class TestConst(unittest.TestCase):
 realized_pattern = UPat(Ops.VIEW, src=(UPat(Ops.BUFFER),))
 
 class TestViewBuffer(unittest.TestCase):
+  # currently realized BUFFERs are like: VIEW(BUFFER)
   # the ShapeTracker on a realized BUFFER is a contiguous ShapeTracker.from_shape(output_shape)
-  # this preserves the output_shape post realization of a uop
+  # this preserves the output_shape post realization of a UOp
   def test_simple_realize(self):
     uop = Tensor.arange(32).realize().lazydata
     assert realized_pattern.match(uop, {})
@@ -2175,11 +2176,30 @@ class TestViewBuffer(unittest.TestCase):
     assert match_ret["view"].st == buf_view.lazydata.st, f"{match_ret['view'].st} != {buf_view.lazydata.st}"
 
   # current state:
-  # VIEW(BUFFER).view(st1)
-  # VIEW(BUFFER).view(st2)
+  # VIEW(VIEW(BUFFER))
+  # VIEW(VIEW(BUFFER))
   # is used to LOAD different views of the same buffer
   def test_different_views_of_the_same_buf(self):
-    pass
+    a = Tensor.arange(10).realize()
+    b = a.shrink(((0, 2),)).sum()
+    c = a.shrink(((3, 5),)).sum()
+    s = check_schedule([b, c], 2)
+    run_schedule(s)
+    self.assertEqual(b.item(), 1)
+    self.assertEqual(c.item(), 7)
+
+  # NOTE: if the movement ops result in a NOOP, we collapse the VIEW
+  def test_movementop_back_to_base_noop(self):
+    a = Tensor.empty(2, 4).realize()
+    t = a.reshape(8, 1).reshape(2, 4)
+    # initially, it has two reshapes
+    movement_ops = [x for x in t.lazydata.toposort if x.op in GroupOp.Movement]
+    assert len(movement_ops) == 2
+    assert set([mop.op for mop in movement_ops]) == {Ops.RESHAPE}
+    #print(t.lazydata) # RESHAPE(RESHPAE(VIEW(BUFFER)))
+    # nothing schedules, see VIZ=1 for how the sink becomes a NOOP
+    check_schedule(t.contiguous(), 0)
+    self.assertIs(t.lazydata.base.buffer, a.lazydata.base.buffer)
 
   # some correctness tests making sure we merge views correctly
   def test_permute_simple(self):
@@ -2193,8 +2213,6 @@ class TestViewBuffer(unittest.TestCase):
     a = Tensor.arange(10).realize()
     t = a.reshape(1, 5, 2).permute(0, 2, 1).permute(1, 0, 2).reshape(10)
     self.assertListEqual(t.tolist(), [0, 2, 4, 6, 8, 1, 3, 5, 7, 9])
-
-  def test_movementop_back_to_base_noop(self): pass
 
 if __name__ == '__main__':
   unittest.main(verbosity=2)
