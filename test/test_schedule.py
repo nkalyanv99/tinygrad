@@ -13,7 +13,7 @@ from tinygrad.device import is_dtype_supported
 from tinygrad.dtype import DType, ImageDType
 from tinygrad.shape.shapetracker import ShapeTracker
 from tinygrad.shape.view import View
-from tinygrad.ops import PatternMatcher, UOp, Ops, UPat, graph_rewrite, track_rewrites, view_supported_devices, symbolic
+from tinygrad.ops import PatternMatcher, UOp, Ops, UPat, graph_rewrite, track_rewrites, view_supported_devices, symbolic, merge_views
 from tinygrad.helpers import CI, DEBUG, FUSE_ARANGE, GlobalCounters, flatten, getenv, SPLIT_REDUCEOP, unwrap, prod, Context
 from tinygrad.codegen.kernel import Kernel, verify_ast
 from tinygrad.engine.schedule import BUF_LIMIT, ScheduleContext, ScheduleItem, create_schedule, view_right, view_left, remove_movement_ops, to_uop
@@ -2129,6 +2129,50 @@ class TestConst(unittest.TestCase):
     self.assertEqual(len(sched), 1)
     run_schedule(sched, var_vals)
     self.assertEqual(a.tolist(), 3)
+
+realized_pattern = UPat(Ops.VIEW, src=(UPat(Ops.BUFFER),))
+
+class TestViewBuffer(unittest.TestCase):
+  # the ShapeTracker on a realized BUFFER is a contiguous ShapeTracker.from_shape(output_shape)
+  # this preserves the output_shape post realization of a uop
+  def test_simple_realize(self):
+    uop = Tensor.arange(32).realize().lazydata
+    assert realized_pattern.match(uop, {})
+    assert uop.st == ShapeTracker.from_shape((32,))
+
+  def test_realize_non_contig_view_becomes_contig(self):
+    t = Tensor.arange(6).reshape(1, 2, 3).permute((2, 0, 1))
+    uop = t.contiguous().realize().lazydata
+    assert not uop.st.contiguous
+    assert realized_pattern.match(uop, {})
+    assert uop.st == ShapeTracker.from_shape((3, 1, 2))
+    self.assertListEqual(t.tolist(), [[[0, 3]], [[1, 4]], [[2, 5]]])
+
+  def test_contig_view_stays_view(self):
+    t = Tensor.arange(6).reshape(1, 2, 3)
+    uop = t.contiguous().realize().lazydata
+    assert uop.st.contiguous
+    assert realized_pattern.match(uop.base, {}) # notice how base is realized
+    assert not realized_pattern.match(uop, {}) # view stays view
+    assert uop.st == ShapeTracker.from_shape((6,)).reshape((1, 2, 3)) # stays a BUFFER.view()
+    np.testing.assert_equal(t.numpy(), np.arange(6).reshape(1, 2, 3))
+
+  # the lazydata of a realized tensor is VIEW(BUFFER), however, if we chain movement ops, what's the final VIEW?
+  @track_rewrites(named=True)
+  def test_chain_movement_ops(self):
+    with Context(TRACK_MATCH_STATS=0): x = Tensor.arange(4).realize()
+    buf_view = x.reshape(2, 2).permute((1, 0)).reshape((1, 2, 2)).expand((2, 2, 2))
+    without_mops = graph_rewrite(buf_view.lazydata, remove_movement_ops)
+    match_ret = UPat(Ops.VIEW, name="outer", src=(UPat(Ops.VIEW, name="inner", src=(UPat(Ops.BUFFER),)),)).match(without_mops, {})[0]
+    # the inner st is the "base" st of x, contiguous shape representation of the real size of that (flat) piece of memory
+    assert match_ret["inner"].st == ShapeTracker.from_shape((4,))
+    # the outer st is a "view" of x, after all the movement ops
+    assert match_ret["outer"].st == buf_view.lazydata.st
+    # we cannot merge VIEW(VIEW(BUFFER)) while also applying movement ops, because that first VIEW needs to exist to preserve the base st
+    merged_buf_view = graph_rewrite(buf_view.lazydata, remove_movement_ops+merge_views)
+    match_ret = UPat(Ops.VIEW, name="view", src=(UPat(Ops.BUFFER),)).match(merged_buf_view, {})[0]
+    # see how the strides are different
+    assert match_ret["view"].st == buf_view.lazydata.st, f"{match_ret['view'].st} != {buf_view.lazydata.st}"
 
 if __name__ == '__main__':
   unittest.main(verbosity=2)
