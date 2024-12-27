@@ -2174,5 +2174,27 @@ class TestViewBuffer(unittest.TestCase):
     # see how the strides are different
     assert match_ret["view"].st == buf_view.lazydata.st, f"{match_ret['view'].st} != {buf_view.lazydata.st}"
 
+  # current state:
+  # VIEW(BUFFER).view(st1)
+  # VIEW(BUFFER).view(st2)
+  # is used to LOAD different views of the same buffer
+  def test_different_views_of_the_same_buf(self):
+    pass
+
+  # some correctness tests making sure we merge views correctly
+  def test_permute_simple(self):
+    a = Tensor.arange(10).realize()
+    t = a.reshape(1, 5, 2).permute(0, 2, 1).expand(2, 2, 5).contiguous().realize()
+    ret = t.tolist()
+    self.assertListEqual(ret[0], ret[1])
+    self.assertListEqual(ret[0], [[0, 2, 4, 6, 8], [1, 3, 5, 7, 9]])
+
+  def test_double_permute(self):
+    a = Tensor.arange(10).realize()
+    t = a.reshape(1, 5, 2).permute(0, 2, 1).permute(1, 0, 2).reshape(10)
+    self.assertListEqual(t.tolist(), [0, 2, 4, 6, 8, 1, 3, 5, 7, 9])
+
+  def test_movementop_back_to_base_noop(self): pass
+
 if __name__ == '__main__':
   unittest.main(verbosity=2)
