@@ -39,8 +39,8 @@ tensor_uop_spec = PatternMatcher([
   # Tensor variable bindings
   (UPat(Ops.BIND, dtypes.int, (UPat(Ops.DEFINE_VAR), UPat.cvar(dtype=dtypes.int)), arg=None), lambda: True),
 
-  # Tensor const has a ShapeTracker of shape=() and a device
-  (UPat(Ops.CONST, src=(UPat(Ops.VIEW, src=(UPat(Ops.DEVICE),)),)), lambda: True),
+  # Tensor const has a device source
+  (UPat(Ops.CONST, src=(UPat(Ops.DEVICE),)), lambda: True),
 
   # DETACH and CONTIGUOUS change how we interpret the source UOp
   # CONTIGUOUS ensures the source UOp realizes
@@ -533,7 +533,7 @@ def store_or_fuse(ctx:ScheduleContext, b:UOp, x:UOp, st:UOp):
 
 break_sched = PatternMatcher([
   # CONST is always fused and generated
-  (UPat(Ops.CONST, name="x", src=(UPat(Ops.VIEW, name="st"),)), lambda x,st: UOp.const(x.dtype.base, x.const_arg).valid(st.st)),
+  (UPat(Ops.CONST, name="x", src=(UPat(Ops.DEVICE),)), lambda x: UOp.const(x.dtype.base, x.const_arg).valid(x.st)),
   (UPat(Ops.VIEW, name="st", src=(UPat(Ops.DEVICE), UPat(Ops.BIND, name="bind"))), unbind_variable),
   # VIEW of BUFFER either becomes a LOAD/STORE or we fuse it
   (UPat(Ops.VIEW, name="st", src=(UPat(Ops.BUFFER, name="b"),)), load_realized),

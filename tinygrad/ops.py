@@ -280,6 +280,10 @@ class UOp(MathTrait, metaclass=UOpMetaClass):
     # these uops define ShapeTracker from the arg
     if self.op is Ops.VIEW: return self.arg
     if self.op in GroupOp.Movement: return unwrap(self.src[0].st).mop(self.op, self.arg)
+    # some uops always have a specific shape
+    if self.op is Ops.CONST:
+      from tinygrad.shape.shapetracker import ShapeTracker
+      return ShapeTracker.from_shape(())
     # otherwise we derive the st from sources
     if len(src_sts:=[x.st for x in self.src if x.st is not None]) == 0: return None
     assert all_same([x.shape for x in src_sts]), f"UOp parents must have the same shape {self} {[x.shape for x in src_sts]}"
@@ -436,10 +440,9 @@ class UOp(MathTrait, metaclass=UOpMetaClass):
   def metaop(op:Ops, shape:tuple[sint, ...], dtype:DType, device:str, arg=None, src:tuple[UOp, ...]=()) -> UOp:
     from tinygrad.shape.shapetracker import ShapeTracker
     if op is Ops.CONST:
-      # Tensor const is CONST(VIEW(DEVICE)) -> RESHAPE -> EXPAND
+      # Tensor const is CONST(DEVICE) -> RESHAPE -> EXPAND
       assert isinstance(arg, get_args(ConstType)), f"trying to create CONST with {arg=}"
-      return UOp.const(dtype, unwrap(arg)).replace(src=(UOp(Ops.VIEW, dtypes.void, (UOp(Ops.DEVICE, arg=device),),
-                 ShapeTracker.from_shape(())),)).reshape((1,)*len(shape)).expand(shape)
+      return UOp.const(dtype, unwrap(arg)).replace(src=(UOp(Ops.DEVICE, arg=device),)).reshape((1,)*len(shape)).expand(shape)
     # TOOD: Tensor variable bindings need device and shape from sources
     if op is Ops.BIND:
       assert isinstance(arg, UOp) and arg.op is Ops.BIND and shape == (), f"trying to create BIND with {arg=} {shape=}"
