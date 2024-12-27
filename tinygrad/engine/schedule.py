@@ -134,7 +134,7 @@ def to_uop(buf:UOp, ctx:ScheduleContext, cache:dict[UOp, UOp]) -> UOp:
   # shapeless op is passthrough
   # realized is passthrough
   # constants are passthrough
-  if buf.st is None or buf.base.is_realized or is_constant(buf.base): return buf
+  if buf.st is None or buf.base.is_realized or is_constant(buf.base) or buf.base.op is Ops.BUFFER: return buf
   # view is passthrough
   if buf is not buf.base:
     cache[buf] = ret = to_uop(buf.base, ctx, cache).view(buf.st)
@@ -199,7 +199,7 @@ def merge_double_reduce(root:UOp, first_reduce:UOp) -> UOp:
 view_right = merge_views+PatternMatcher([
   # STORE(.., ASSIGN(VIEW, ..)) -> STORE(.., ASSIGN(..)).view()
   (UPat(Ops.STORE, src=(UPat.var("b"), UPat.var("st"), UPat.assign(UPat.var("target"), UPat.var("val")))),
-   lambda b,target,st,val: None if target.st is None else apply_swizzle(UOp.store(b, st, UOp.assign(target.base.buf_uop, val)).view(target.st))),
+   lambda b,target,st,val: None if target.op is Ops.BUFFER else apply_swizzle(UOp.store(b, st, UOp.assign(target.base.buf_uop, val)).view(target.st))),
   # REDUCE(src.view(contiguous=False)) -> REDUCE(src.view(contiguous=True)).view()
   (UPat(Ops.REDUCE_AXIS, src=(UPat.var("src"),), name="r").view(name="v"), lambda v,r,src: None if v.st.contiguous else swizzle_r(r, src, v.st)),
   # REDUCE(src.view()) -> REDUCE(src).view()
@@ -521,7 +521,6 @@ def unbind_variable(ctx:ScheduleContext, bind:UOp, st:UOp):
   return UOp.const(bind.dtype, bind).valid(unwrap(st.st))
 
 def load_realized(ctx:ScheduleContext, b:UOp, st:UOp):
-  assert st.size == b.size and unwrap(st.st).contiguous, f"ShapeTracker of realized {b} BUFFER must match the BUFFER size {st}"
   # NOTE: if we're assigning to the BUFFER too, PRELOAD tells toposort to place this load before the ASSIGN
   return UOp(Ops.PRELOAD if b in ctx.assigns else Ops.LOAD, b.dtype.base, (b, unwrap(st.st).to_uop()))
 
@@ -555,10 +554,8 @@ create_ctx = PatternMatcher([(UPat(Ops.VIEW, name="view", src=(UPat(Ops.BUFFER, 
 
 remove_movement_ops = PatternMatcher([
   (UPat(GroupOp.Movement, name="x"), lambda x: x.base.view(unwrap(x.st))),
-  # merge one src (unrealized) views
-  # NOTE: we can't merge realized buffer views here, because the buffer is realized before the view
-  (UPat(Ops.VIEW, src=(UPat(Ops.VIEW, src=(UPat.var("x"),), name="v1")), name="v2"),
-   lambda x,v1,v2: v1.replace(arg=v1.arg+v2.arg) if x.op is not Ops.BUFFER else None),
+  # merge one src views
+  (UPat(Ops.VIEW, src=(UPat(Ops.VIEW, src=(UPat(),), name="v1")), name="v2"), lambda v1,v2: v1.replace(arg=v1.arg+v2.arg)),
   # merge unmasked const views
   (UPat(Ops.VIEW, name="view", src=(UPat(Ops.CONST, name="const", src=(UPat(Ops.VIEW, name="st"),) ),)),
    lambda st,const,view: const.replace(src=(st.replace(arg=st.st+view.st),)) if all(v.mask is None for v in (st.st+view.st).views) else None),
